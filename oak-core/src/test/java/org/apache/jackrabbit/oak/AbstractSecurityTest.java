@@ -16,14 +16,9 @@
  */
 package org.apache.jackrabbit.oak;
 
-import static com.google.common.collect.Lists.newArrayList;
-
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
-
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.jcr.Credentials;
 import javax.jcr.NoSuchWorkspaceException;
 import javax.jcr.RepositoryException;
@@ -51,11 +46,15 @@ import org.apache.jackrabbit.oak.plugins.index.reference.ReferenceEditorProvider
 import org.apache.jackrabbit.oak.plugins.index.reference.ReferenceIndexProvider;
 import org.apache.jackrabbit.oak.plugins.name.NamespaceEditorProvider;
 import org.apache.jackrabbit.oak.plugins.nodetype.TypeEditorProvider;
-import org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent;
-import org.apache.jackrabbit.oak.plugins.value.ValueFactoryImpl;
+import org.apache.jackrabbit.oak.plugins.tree.RootProvider;
+import org.apache.jackrabbit.oak.plugins.tree.TreeProvider;
+import org.apache.jackrabbit.oak.plugins.tree.impl.RootProviderService;
+import org.apache.jackrabbit.oak.plugins.tree.impl.TreeProviderService;
+import org.apache.jackrabbit.oak.plugins.value.jcr.PartialValueFactory;
+import org.apache.jackrabbit.oak.plugins.value.jcr.ValueFactoryImpl;
 import org.apache.jackrabbit.oak.plugins.version.VersionHook;
 import org.apache.jackrabbit.oak.query.QueryEngineSettings;
-import org.apache.jackrabbit.oak.security.SecurityProviderImpl;
+import org.apache.jackrabbit.oak.security.internal.SecurityProviderBuilder;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authentication.ConfigurationUtil;
@@ -64,8 +63,12 @@ import org.apache.jackrabbit.oak.spi.security.principal.PrincipalConfiguration;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.util.UserUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
+
+import static com.google.common.collect.Lists.newArrayList;
 
 /**
  * AbstractOakTest is the base class for oak test execution.
@@ -82,6 +85,8 @@ public abstract class AbstractSecurityTest {
     protected Root root;
 
     protected QueryEngineSettings querySettings;
+    private final RootProvider rootProvider = new RootProviderService(); 
+    private final TreeProvider treeProvider = new TreeProviderService();
 
     @Before
     public void before() throws Exception {
@@ -101,7 +106,7 @@ public abstract class AbstractSecurityTest {
         withEditors(oak);
         contentRepository = oak.createContentRepository();
 
-        adminSession = login(getAdminCredentials());
+        adminSession = createAdminSession(contentRepository);
         root = adminSession.getLatestRoot();
 
         Configuration.setConfiguration(getConfiguration());
@@ -128,9 +133,16 @@ public abstract class AbstractSecurityTest {
 
     protected SecurityProvider getSecurityProvider() {
         if (securityProvider == null) {
-            securityProvider = new SecurityProviderImpl(getSecurityConfigParameters());
+            securityProvider = initSecurityProvider();
         }
         return securityProvider;
+    }
+
+    protected SecurityProvider initSecurityProvider() {
+        return SecurityProviderBuilder.newBuilder().with(getSecurityConfigParameters())
+                .withRootProvider(rootProvider)
+                .withTreeProvider(treeProvider)
+                .build();
     }
 
     protected Oak withEditors(Oak oak) {
@@ -163,6 +175,11 @@ public abstract class AbstractSecurityTest {
         return new SimpleCredentials(adminId, adminId.toCharArray());
     }
 
+    @NotNull
+    protected ContentSession createAdminSession(@NotNull ContentRepository repository) throws LoginException, NoSuchWorkspaceException {
+        return repository.login(getAdminCredentials(), null);
+    }
+
     protected NamePathMapper getNamePathMapper() {
         return namePathMapper;
     }
@@ -187,7 +204,7 @@ public abstract class AbstractSecurityTest {
     }
     
     protected JackrabbitAccessControlManager getAccessControlManager(Root root) {
-        AccessControlManager acMgr = getConfig(AuthorizationConfiguration.class).getAccessControlManager(root, NamePathMapper.DEFAULT);
+        AccessControlManager acMgr = getConfig(AuthorizationConfiguration.class).getAccessControlManager(root, getNamePathMapper());
         if (acMgr instanceof JackrabbitAccessControlManager) {
             return (JackrabbitAccessControlManager) acMgr;
         } else {
@@ -216,8 +233,12 @@ public abstract class AbstractSecurityTest {
         return getValueFactory(root);
     }
 
-    protected ValueFactory getValueFactory(@Nonnull Root root) {
+    protected ValueFactory getValueFactory(@NotNull Root root) {
         return new ValueFactoryImpl(root, getNamePathMapper());
+    }
+
+    protected PartialValueFactory getPartialValueFactory() {
+        return new PartialValueFactory(getNamePathMapper());
     }
 
     protected long waitForSystemTimeIncrement(long old) {
@@ -243,5 +264,13 @@ public abstract class AbstractSecurityTest {
 
     protected <T> T getConfig(Class<T> configClass) {
         return getSecurityProvider().getConfiguration(configClass);
+    }
+
+    public RootProvider getRootProvider() {
+        return rootProvider;
+    }
+
+    public TreeProvider getTreeProvider() {
+        return treeProvider;
     }
 }

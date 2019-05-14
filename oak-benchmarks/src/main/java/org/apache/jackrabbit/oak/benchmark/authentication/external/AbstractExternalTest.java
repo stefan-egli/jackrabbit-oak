@@ -24,8 +24,6 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
 import javax.jcr.Credentials;
 import javax.jcr.Repository;
 import javax.jcr.Session;
@@ -43,8 +41,7 @@ import org.apache.jackrabbit.oak.fixture.JcrCreator;
 import org.apache.jackrabbit.oak.fixture.OakRepositoryFixture;
 import org.apache.jackrabbit.oak.fixture.RepositoryFixture;
 import org.apache.jackrabbit.oak.jcr.Jcr;
-import org.apache.jackrabbit.oak.security.SecurityProviderImpl;
-import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
+import org.apache.jackrabbit.oak.security.internal.SecurityProviderBuilder;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.ExternalGroup;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.ExternalIdentity;
@@ -70,8 +67,9 @@ import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
 import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUtils;
 import org.apache.sling.testing.mock.osgi.context.OsgiContextImpl;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
-import static com.google.common.base.Preconditions.checkNotNull;
 import static com.google.common.base.Preconditions.checkState;
 
 /**
@@ -89,20 +87,21 @@ import static com.google.common.base.Preconditions.checkState;
  * is set to 1 and each user will become member of each of the groups as defined
  * by {@code numberOfGroups}.
  */
-abstract class AbstractExternalTest extends AbstractTest {
+abstract class AbstractExternalTest extends AbstractTest<RepositoryFixture> {
 
     private static final String PATH_PREFIX = "pathPrefix";
 
-    private final Random random = new Random();
+    protected final long seed = Long.getLong("seed", System.currentTimeMillis());
+    private final Random random = new Random(seed);
     private final ExternalPrincipalConfiguration externalPrincipalConfiguration = new ExternalPrincipalConfiguration();
 
     private ContentRepository contentRepository;
-    private final SecurityProvider securityProvider = new TestSecurityProvider(ConfigurationParameters.EMPTY);
+    private final SecurityProvider securityProvider = newTestSecurityProvider(externalPrincipalConfiguration);
 
     final DefaultSyncConfig syncConfig = new DefaultSyncConfig();
     final SyncHandler syncHandler = new DefaultSyncHandler(syncConfig);
 
-    final ExternalIdentityProvider idp;
+    final TestIdentityProvider idp;
     final long delay;
 
     SyncManagerImpl syncManager;
@@ -110,13 +109,13 @@ abstract class AbstractExternalTest extends AbstractTest {
 
     protected AbstractExternalTest(int numberOfUsers, int numberOfGroups,
                                    long expTime, boolean dynamicMembership,
-                                   @Nonnull List<String> autoMembership) {
+                                   @NotNull List<String> autoMembership) {
         this(numberOfUsers, numberOfGroups, expTime, dynamicMembership, autoMembership, 0);
     }
 
     protected AbstractExternalTest(int numberOfUsers, int numberOfGroups,
                                    long expTime, boolean dynamicMembership,
-                                   @Nonnull List<String> autoMembership,
+                                   @NotNull List<String> autoMembership,
                                    int roundtripDelay) {
 
         idp = (roundtripDelay < 0) ? new PrincipalResolvingProvider(numberOfUsers, numberOfGroups) : new TestIdentityProvider(numberOfUsers, numberOfGroups);
@@ -153,10 +152,10 @@ abstract class AbstractExternalTest extends AbstractTest {
     }
 
     @Override
-    public void run(Iterable iterable, List concurrencyLevels) {
+    public void run(Iterable<RepositoryFixture> fixtures, List<Integer> concurrencyLevels) {
         // make sure the desired JAAS config is set
         Configuration.setConfiguration(createConfiguration());
-        super.run(iterable, concurrencyLevels);
+        super.run(fixtures, concurrencyLevels);
     }
 
     @Override
@@ -216,12 +215,12 @@ abstract class AbstractExternalTest extends AbstractTest {
 
                         // now register the sync-handler with the dynamic membership config
                         // in order to enable dynamic membership with the external principal configuration
-                        Map props = ImmutableMap.of(
+                        Map<String, Object> props = ImmutableMap.of(
                                 DefaultSyncConfigImpl.PARAM_USER_DYNAMIC_MEMBERSHIP, syncConfig.user().getDynamicMembership(),
                                 DefaultSyncConfigImpl.PARAM_GROUP_AUTO_MEMBERSHIP, syncConfig.user().getAutoMembership());
                         context.registerService(SyncHandler.class, WhiteboardUtils.getService(whiteboard, SyncHandler.class), props);
 
-                        Map shMappingProps = ImmutableMap.of(
+                        Map<String, Object> shMappingProps = ImmutableMap.of(
                                 SyncHandlerMapping.PARAM_IDP_NAME, idp.getName(),
                                 SyncHandlerMapping.PARAM_SYNC_HANDLER_NAME, syncConfig.getName());
                         context.registerService(SyncHandlerMapping.class, new SyncHandlerMapping() {}, shMappingProps);
@@ -236,18 +235,21 @@ abstract class AbstractExternalTest extends AbstractTest {
         }
     }
 
-    private final class TestSecurityProvider extends SecurityProviderImpl {
-        public TestSecurityProvider(@Nonnull ConfigurationParameters configuration) {
-            super(configuration);
-            PrincipalConfiguration principalConfiguration = getConfiguration(PrincipalConfiguration.class);
-            if (!(principalConfiguration instanceof CompositePrincipalConfiguration)) {
-                throw new IllegalStateException();
-            } else {
-                PrincipalConfiguration defConfig = checkNotNull(((CompositePrincipalConfiguration) principalConfiguration).getDefaultConfig());
-                bindPrincipalConfiguration(externalPrincipalConfiguration);
-                bindPrincipalConfiguration(defConfig);
-            }
+    private static SecurityProvider newTestSecurityProvider(
+            ExternalPrincipalConfiguration externalPrincipalConfiguration) {
+        SecurityProvider delegate = SecurityProviderBuilder.newBuilder().build();
+
+        PrincipalConfiguration principalConfiguration = delegate.getConfiguration(PrincipalConfiguration.class);
+        if (!(principalConfiguration instanceof CompositePrincipalConfiguration)) {
+            throw new IllegalStateException();
+        } else {
+            externalPrincipalConfiguration.setSecurityProvider(delegate);
+            CompositePrincipalConfiguration composite = (CompositePrincipalConfiguration) principalConfiguration;
+            PrincipalConfiguration defConfig = composite.getDefaultConfig();
+            composite.addConfiguration(externalPrincipalConfiguration);
+            composite.addConfiguration(defConfig);
         }
+        return delegate;
     }
 
     class TestIdentityProvider implements ExternalIdentityProvider {
@@ -255,20 +257,20 @@ abstract class AbstractExternalTest extends AbstractTest {
         private final int numberOfUsers;
         private final int membershipSize;
 
-        private TestIdentityProvider(int numberOfUsers, int membershipSize) {
+        TestIdentityProvider(int numberOfUsers, int membershipSize) {
             this.numberOfUsers = numberOfUsers;
             this.membershipSize = membershipSize;
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public String getName() {
             return "test";
         }
 
-        @CheckForNull
+        @Nullable
         @Override
-        public ExternalIdentity getIdentity(@Nonnull ExternalIdentityRef ref) {
+        public ExternalIdentity getIdentity(@NotNull ExternalIdentityRef ref) {
             String id = ref.getId();
             long index = Long.valueOf(id.substring(1));
             if (id.charAt(0) == 'u') {
@@ -285,25 +287,25 @@ abstract class AbstractExternalTest extends AbstractTest {
             }
         }
 
-        @CheckForNull
+        @Nullable
         @Override
-        public ExternalUser getUser(@Nonnull String userId) {
+        public ExternalUser getUser(@NotNull String userId) {
             return new TestUser(Long.valueOf(userId.substring(1)));
         }
 
-        @CheckForNull
+        @Nullable
         @Override
-        public ExternalUser authenticate(@Nonnull Credentials credentials) {
+        public ExternalUser authenticate(@NotNull Credentials credentials) {
             return getUser(((SimpleCredentials) credentials).getUserID());
         }
 
-        @CheckForNull
+        @Nullable
         @Override
-        public ExternalGroup getGroup(@Nonnull String name) {
+        public ExternalGroup getGroup(@NotNull String name) {
             return new TestGroup(Long.valueOf(name.substring(1)));
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public Iterator<ExternalUser> listUsers() {
             Set<ExternalUser> all = new HashSet<>();
@@ -313,7 +315,7 @@ abstract class AbstractExternalTest extends AbstractTest {
             return all.iterator();
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public Iterator<ExternalGroup> listGroups() {
             Set<ExternalGroup> all = new HashSet<>();
@@ -336,15 +338,15 @@ abstract class AbstractExternalTest extends AbstractTest {
         }
     }
 
-    private class PrincipalResolvingProvider extends TestIdentityProvider implements PrincipalNameResolver {
+    private final class PrincipalResolvingProvider extends TestIdentityProvider implements PrincipalNameResolver {
 
-        private PrincipalResolvingProvider(int numberOfUsers, int membershipSize) {
+        PrincipalResolvingProvider(int numberOfUsers, int membershipSize) {
             super(numberOfUsers, membershipSize);
         }
 
-        @Nonnull
+        @NotNull
         @Override
-        public String fromExternalIdentityRef(@Nonnull ExternalIdentityRef externalIdentityRef) {
+        public String fromExternalIdentityRef(@NotNull ExternalIdentityRef externalIdentityRef) {
             return "p_" + externalIdentityRef.getId();
         }
     }
@@ -355,25 +357,25 @@ abstract class AbstractExternalTest extends AbstractTest {
         private final String principalName;
         private final ExternalIdentityRef id;
 
-        public TestIdentity(@Nonnull String userId) {
+        public TestIdentity(@NotNull String userId) {
             this.userId = userId;
             this.principalName = "p_"+userId;
             id = new ExternalIdentityRef(userId, idp.getName());
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public String getId() {
             return userId;
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public String getPrincipalName() {
             return principalName;
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public ExternalIdentityRef getExternalId() {
             return id;
@@ -384,13 +386,13 @@ abstract class AbstractExternalTest extends AbstractTest {
             return null;
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public Iterable<ExternalIdentityRef> getDeclaredGroups() {
             return ((TestIdentityProvider) idp).getDeclaredGroupRefs(userId);
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public Map<String, ?> getProperties() {
             return ImmutableMap.of();
@@ -412,7 +414,7 @@ abstract class AbstractExternalTest extends AbstractTest {
             super("g" + index);
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public Iterable<ExternalIdentityRef> getDeclaredMembers() throws ExternalIdentityException {
             return ImmutableSet.of();

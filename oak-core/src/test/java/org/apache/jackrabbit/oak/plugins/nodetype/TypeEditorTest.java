@@ -21,13 +21,15 @@ import static org.apache.jackrabbit.JcrConstants.JCR_PRIMARYTYPE;
 import static org.apache.jackrabbit.JcrConstants.NT_FOLDER;
 import static org.apache.jackrabbit.JcrConstants.MIX_REFERENCEABLE;
 import static org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState.EMPTY_NODE;
-import static org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent.INITIAL_CONTENT;
+import static org.apache.jackrabbit.oak.InitialContentHelper.INITIAL_CONTENT;
 import static org.easymock.EasyMock.createControl;
 import static org.easymock.EasyMock.expect;
 import static org.easymock.EasyMock.replay;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+
+import java.util.Collections;
 
 import com.google.common.collect.ImmutableList;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
@@ -85,6 +87,7 @@ public class TypeEditorTest {
     public void removeMandatoryProperty() throws CommitFailedException {
         EffectiveType effective = createControl().createMock(EffectiveType.class);
         expect(effective.isMandatoryProperty("mandatory")).andReturn(true);
+        expect(effective.getDirectTypeNames()).andReturn(Collections.emptyList());
 
         replay(effective);
 
@@ -107,6 +110,7 @@ public class TypeEditorTest {
     public void removeMandatoryChildNode() throws CommitFailedException {
         EffectiveType effective = createControl().createMock(EffectiveType.class);
         expect(effective.isMandatoryChildNode("mandatory")).andReturn(true);
+        expect(effective.getDirectTypeNames()).andReturn(Collections.emptyList());
 
         replay(effective);
 

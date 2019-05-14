@@ -17,11 +17,8 @@
 package org.apache.jackrabbit.oak.security.user;
 
 import java.security.Principal;
-import java.security.acl.Group;
 import java.util.HashSet;
 import java.util.Set;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
 import javax.jcr.RepositoryException;
 import javax.security.auth.Subject;
 
@@ -34,9 +31,12 @@ import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.spi.security.principal.AdminPrincipal;
+import org.apache.jackrabbit.oak.spi.security.principal.GroupPrincipals;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalImpl;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalIteratorAdapter;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,24 +52,21 @@ class ImpersonationImpl implements Impersonation, UserConstants {
     private final UserImpl user;
     private final PrincipalManager principalManager;
 
-    ImpersonationImpl(@Nonnull UserImpl user) throws RepositoryException {
+    ImpersonationImpl(@NotNull UserImpl user) {
         this.user = user;
         this.principalManager = user.getUserManager().getPrincipalManager();
     }
 
     //------------------------------------------------------< Impersonation >---
 
-    /**
-     * @see org.apache.jackrabbit.api.security.user.Impersonation#getImpersonators()
-     */
-    @Nonnull
+    @NotNull
     @Override
-    public PrincipalIterator getImpersonators() throws RepositoryException {
+    public PrincipalIterator getImpersonators() {
         Set<String> impersonators = getImpersonatorNames();
         if (impersonators.isEmpty()) {
             return PrincipalIteratorAdapter.EMPTY;
         } else {
-            Set<Principal> s = new HashSet<Principal>();
+            Set<Principal> s = new HashSet<>();
             for (final String pName : impersonators) {
                 Principal p = principalManager.getPrincipal(pName);
                 if (p == null) {
@@ -83,14 +80,12 @@ class ImpersonationImpl implements Impersonation, UserConstants {
         }
     }
 
-    /**
-     * @see org.apache.jackrabbit.api.security.user.Impersonation#grantImpersonation(Principal)
-     */
     @Override
-    public boolean grantImpersonation(@Nonnull Principal principal) throws RepositoryException {
+    public boolean grantImpersonation(@NotNull Principal principal) throws RepositoryException {
         if (!isValidPrincipal(principal)) {
             return false;
         }
+
         String principalName = principal.getName();
         // make sure user does not impersonate himself
         Tree userTree = user.getTree();
@@ -99,6 +94,8 @@ class ImpersonationImpl implements Impersonation, UserConstants {
             log.warn("Cannot grant impersonation to oneself.");
             return false;
         }
+
+        user.getUserManager().onImpersonation(user, principal, true);
 
         Set<String> impersonators = getImpersonatorNames(userTree);
         if (impersonators.add(principalName)) {
@@ -109,12 +106,11 @@ class ImpersonationImpl implements Impersonation, UserConstants {
         }
     }
 
-    /**
-     * @see Impersonation#revokeImpersonation(java.security.Principal)
-     */
     @Override
-    public boolean revokeImpersonation(@Nonnull Principal principal) throws RepositoryException {
+    public boolean revokeImpersonation(@NotNull Principal principal) throws RepositoryException {
         String pName = principal.getName();
+
+        user.getUserManager().onImpersonation(user, principal, false);
 
         Tree userTree = user.getTree();
         Set<String> impersonators = getImpersonatorNames(userTree);
@@ -126,16 +122,13 @@ class ImpersonationImpl implements Impersonation, UserConstants {
         }
     }
 
-    /**
-     * @see Impersonation#allows(javax.security.auth.Subject)
-     */
     @Override
-    public boolean allows(@CheckForNull Subject subject) throws RepositoryException {
+    public boolean allows(@Nullable Subject subject) {
         if (subject == null) {
             return false;
         }
 
-        Set<String> principalNames = new HashSet<String>();
+        Set<String> principalNames = new HashSet<>();
         for (Principal principal : subject.getPrincipals()) {
             principalNames.add(principal.getName());
         }
@@ -154,14 +147,14 @@ class ImpersonationImpl implements Impersonation, UserConstants {
     }
 
     //------------------------------------------------------------< private >---
-    @Nonnull
+    @NotNull
     private Set<String> getImpersonatorNames() {
         return getImpersonatorNames(user.getTree());
     }
 
-    @Nonnull
-    private Set<String> getImpersonatorNames(@Nonnull Tree userTree) {
-        Set<String> princNames = new HashSet<String>();
+    @NotNull
+    private Set<String> getImpersonatorNames(@NotNull Tree userTree) {
+        Set<String> princNames = new HashSet<>();
         PropertyState impersonators = userTree.getProperty(REP_IMPERSONATORS);
         if (impersonators != null) {
             for (String v : impersonators.getValue(STRINGS)) {
@@ -171,18 +164,18 @@ class ImpersonationImpl implements Impersonation, UserConstants {
         return princNames;
     }
 
-    private void updateImpersonatorNames(@Nonnull Tree userTree, @Nonnull Set<String> principalNames) {
-        if (principalNames == null || principalNames.isEmpty()) {
+    private void updateImpersonatorNames(@NotNull Tree userTree, @NotNull Set<String> principalNames) {
+        if (principalNames.isEmpty()) {
             userTree.removeProperty(REP_IMPERSONATORS);
         } else {
             userTree.setProperty(REP_IMPERSONATORS, principalNames, Type.STRINGS);
         }
     }
 
-    private boolean isAdmin(@Nonnull Principal principal) {
+    private boolean isAdmin(@NotNull Principal principal) {
         if (principal instanceof AdminPrincipal) {
             return true;
-        } else if (principal instanceof Group) {
+        } else if (GroupPrincipals.isGroup(principal)) {
             return false;
         } else {
             try {
@@ -195,7 +188,7 @@ class ImpersonationImpl implements Impersonation, UserConstants {
         }
     }
 
-    private boolean isValidPrincipal(@Nonnull Principal principal) {
+    private boolean isValidPrincipal(@NotNull Principal principal) {
         Principal p = null;
         // shortcut for TreeBasedPrincipal
         if (principal instanceof TreeBasedPrincipal) {
@@ -215,7 +208,7 @@ class ImpersonationImpl implements Impersonation, UserConstants {
             log.debug("Cannot grant impersonation to an unknown principal.");
             return false;
         }
-        if (p instanceof Group) {
+        if (GroupPrincipals.isGroup(p)) {
             log.debug("Cannot grant impersonation to a principal that is a Group.");
             return false;
         }

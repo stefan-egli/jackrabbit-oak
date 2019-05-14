@@ -17,8 +17,6 @@
 package org.apache.jackrabbit.oak.run.osgi
 
 import org.apache.felix.connect.launch.PojoServiceRegistry
-import org.apache.felix.scr.Component
-import org.apache.felix.scr.ScrService
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters
 import org.apache.jackrabbit.oak.spi.security.Context
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider
@@ -34,17 +32,14 @@ import org.apache.jackrabbit.oak.spi.security.user.action.AuthorizableAction
 import org.apache.jackrabbit.oak.spi.security.user.action.AuthorizableActionProvider
 import org.junit.Before
 import org.junit.Test
-import org.osgi.framework.Filter
 import org.osgi.framework.ServiceEvent
-import org.osgi.framework.ServiceListener
 import org.osgi.framework.ServiceReference
 import org.osgi.service.cm.ConfigurationAdmin
 
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 
 import static org.mockito.Mockito.mock
 import static org.mockito.Mockito.when
+import static org.osgi.service.component.runtime.ServiceComponentRuntime.*
 
 class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
 
@@ -202,17 +197,15 @@ class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
         //deactivate and its internal state would be reset
         UserConfiguration userConfiguration = getServiceWithWait(UserConfiguration.class)
 
-
-        ScrService scr = getServiceWithWait(ScrService.class)
-        Component[] c = scr.getComponents('org.apache.jackrabbit.oak.security.authentication.AuthenticationConfigurationImpl')
-        assert c
+        def authComponentName = 'org.apache.jackrabbit.oak.security.authentication.AuthenticationConfigurationImpl'
 
         // 1. Disable AuthenticationConfiguration such that SecurityProvider is unregistered
         awaitServiceEvent({
-                    c[0].disable()
+                    disableComponent(authComponentName)
                 },
                 '(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)',
-                ServiceEvent.UNREGISTERING
+                ServiceEvent.UNREGISTERING,
+                5000
         )
 
         assert securityProviderServiceReferences == null
@@ -231,7 +224,7 @@ class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
 
         // 3. Enable component again such that SecurityProvider gets reactivated
         awaitServiceEvent({
-                    c[0].enable()
+                   enableComponent(authComponentName)
                 },
                 '(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)',
                 ServiceEvent.REGISTERED
@@ -271,13 +264,11 @@ class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
         assertAuthorizationConfig(securityProvider)
         assertUserConfig(securityProvider, "jcr:read")
 
-        ScrService scr = getServiceWithWait(ScrService.class)
-        Component[] c = scr.getComponents('org.apache.jackrabbit.oak.security.authentication.AuthenticationConfigurationImpl')
-        assert c
+        String authComponentName = 'org.apache.jackrabbit.oak.security.authentication.AuthenticationConfigurationImpl'
 
         // 2. Disable AuthenticationConfiguration such that SecurityProvider is unregistered
         awaitServiceEvent({
-                    c[0].disable()
+                    disableComponent(authComponentName)
                 },
                 "(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)",
                 ServiceEvent.UNREGISTERING
@@ -287,7 +278,7 @@ class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
 
         // 3. Enable component again such that SecurityProvider gets reactivated
         awaitServiceEvent({
-                    c[0].enable()
+                    enableComponent(authComponentName)
                 },
                 "(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)",
                 ServiceEvent.REGISTERED
@@ -314,13 +305,24 @@ class SecurityProviderRegistrationTest extends AbstractRepositoryFactoryTest {
         // If a service is registered, and if the PID of the service matches the
         // precondition, the SecurityProvider is registered again.
 
-        def registration = registry.registerService(serviceClass.name, service, dict("service.pid": "test.Required" + serviceClass.simpleName))
+        def registration;
+        awaitServiceEvent({
+                    registration = registry.registerService(serviceClass.name, service, dict("service.pid": "test.Required" + serviceClass.simpleName))
+                },
+                "(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)",
+                ServiceEvent.REGISTERED
+        )
         assert securityProviderServiceReferences != null
 
         // If the service is unregistered, but the precondition is still in
         // place, the SecurityProvider unregisters again.
 
-        registration.unregister()
+        awaitServiceEvent({
+                    registration.unregister()
+                },
+                "(objectClass=org.apache.jackrabbit.oak.spi.security.SecurityProvider)",
+                ServiceEvent.UNREGISTERING
+        )
         assert securityProviderServiceReferences == null
 
         // Removing the precondition allows the SecurityProvider to register.

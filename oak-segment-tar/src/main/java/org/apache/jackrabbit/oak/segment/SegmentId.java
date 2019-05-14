@@ -23,10 +23,10 @@ import static org.apache.jackrabbit.oak.segment.SegmentStore.EMPTY_STORE;
 
 import java.util.UUID;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
 import org.apache.jackrabbit.oak.commons.StringUtils;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,7 +54,7 @@ public class SegmentId implements Comparable<SegmentId> {
         return (lsb >>> 60) == 0xAL;
     }
 
-    @Nonnull
+    @NotNull
     private final SegmentStore store;
 
     private final long msb;
@@ -63,15 +63,19 @@ public class SegmentId implements Comparable<SegmentId> {
 
     private final long creationTime;
 
+    /** Callback called whenever an underlying and locally memoised segment is accessed */
+    private final Runnable onAccess;
+
     /**
      * The gc generation of this segment or -1 if unknown.
      */
-    private int gcGeneration = -1;
+    @Nullable
+    private GCGeneration gcGeneration;
 
     /**
      * The gc info of this segment if it has been reclaimed or {@code null} otherwise.
      */
-    @CheckForNull
+    @Nullable
     private String gcInfo;
 
     /**
@@ -80,11 +84,29 @@ public class SegmentId implements Comparable<SegmentId> {
      */
     private volatile Segment segment;
 
-    public SegmentId(@Nonnull SegmentStore store, long msb, long lsb) {
+    /**
+     * Create a new segment id with access tracking.
+     * @param store  store this is belongs to
+     * @param msb    most significant bits of this id
+     * @param lsb    least significant bits of this id
+     * @param onAccess  callback called whenever an underlying and locally memoised segment is accessed.
+     */
+    public SegmentId(@NotNull SegmentStore store, long msb, long lsb, @NotNull Runnable onAccess) {
         this.store = store;
         this.msb = msb;
         this.lsb = lsb;
+        this.onAccess = onAccess;
         this.creationTime = System.currentTimeMillis();
+    }
+
+    /**
+     * Create a new segment id without access tracking.
+     * @param store  store this is belongs to
+     * @param msb    most significant bits of this id
+     * @param lsb    least significant bits of this id
+     */
+    public SegmentId(@NotNull SegmentStore store, long msb, long lsb) {
+        this(store, msb, lsb, () -> {});
     }
 
     /**
@@ -120,7 +142,7 @@ public class SegmentId implements Comparable<SegmentId> {
      * @see #loaded(Segment)
      * @see #unloaded()
      */
-    @Nonnull
+    @NotNull
     public Segment getSegment() {
         Segment segment = this.segment;
         if (segment == null) {
@@ -128,10 +150,11 @@ public class SegmentId implements Comparable<SegmentId> {
                 segment = this.segment;
                 if (segment == null) {
                     log.debug("Loading segment {}", this);
-                    segment = store.readSegment(this);
+                    return store.readSegment(this);
                 }
             }
         }
+        onAccess.run();
         return segment;
     }
 
@@ -139,21 +162,21 @@ public class SegmentId implements Comparable<SegmentId> {
      * @return  garbage collection related information like the age of this segment
      *          id, the generation of its segment and information about its gc status.
      */
-    @Nonnull
+    @NotNull
     String gcInfo() {
         StringBuilder sb = new StringBuilder();
         sb.append("SegmentId age=").append(System.currentTimeMillis() - creationTime).append("ms");
         if (gcInfo != null) {
             sb.append(",").append(gcInfo);
         }
-        if (gcGeneration >= 0) {
+        if (gcGeneration != null) {
             sb.append(",").append("segment-generation=").append(gcGeneration);
         }
         return sb.toString();
     }
 
     /* For testing only */
-    @CheckForNull
+    @Nullable
     String getGcInfo() {
         return gcInfo;
     }
@@ -165,7 +188,7 @@ public class SegmentId implements Comparable<SegmentId> {
      *                is logged along with the {@code SegmentNotFoundException}
      *                when attempting to resolve the segment of this id.
      */
-    public void reclaimed(@Nonnull String gcInfo) {
+    public void reclaimed(@NotNull String gcInfo) {
         this.gcInfo = gcInfo;
     }
 
@@ -176,7 +199,7 @@ public class SegmentId implements Comparable<SegmentId> {
      * @see #getSegment()
      * @see #unloaded()
      */
-    void loaded(@Nonnull Segment segment) {
+    void loaded(@NotNull Segment segment) {
         this.segment = segment;
         this.gcGeneration = segment.getGcGeneration();
     }
@@ -196,7 +219,7 @@ public class SegmentId implements Comparable<SegmentId> {
      * @param store
      * @return  {@code true} iff this instance belongs to {@code store}
      */
-    public boolean sameStore(@Nonnull SegmentStore store) {
+    public boolean sameStore(@NotNull SegmentStore store) {
         return this.store == store;
     }
 
@@ -216,17 +239,19 @@ public class SegmentId implements Comparable<SegmentId> {
      * get loaded if the generation info is missing
      * @return the segment's gc generation
      */
-    public int getGcGeneration() {
-        if (gcGeneration < 0) {
-            getSegment();
+    @NotNull
+    public GCGeneration getGcGeneration() {
+        if (gcGeneration == null) {
+            return getSegment().getGcGeneration();
+        } else {
+            return gcGeneration;
         }
-        return gcGeneration;
     }
 
     // --------------------------------------------------------< Comparable >--
 
     @Override
-    public int compareTo(@Nonnull SegmentId that) {
+    public int compareTo(@NotNull SegmentId that) {
         int d = Long.valueOf(this.msb).compareTo(that.msb);
         if (d == 0) {
             d = Long.valueOf(this.lsb).compareTo(that.lsb);

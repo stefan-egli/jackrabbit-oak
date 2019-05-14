@@ -26,7 +26,8 @@ import org.apache.jackrabbit.oak.plugins.index.solr.configuration.DefaultSolrCon
 import org.apache.jackrabbit.oak.plugins.index.solr.configuration.OakSolrConfiguration;
 import org.apache.jackrabbit.oak.plugins.index.solr.configuration.OakSolrConfigurationProvider;
 import org.apache.jackrabbit.oak.plugins.index.solr.server.SolrServerProvider;
-import org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent;
+import org.apache.jackrabbit.oak.plugins.memory.PropertyValues;
+import org.apache.jackrabbit.oak.InitialContentHelper;
 import org.apache.jackrabbit.oak.query.NodeStateNodeTypeInfoProvider;
 import org.apache.jackrabbit.oak.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.query.ast.NodeTypeInfo;
@@ -37,11 +38,10 @@ import org.apache.jackrabbit.oak.query.index.FilterImpl;
 import org.apache.jackrabbit.oak.spi.query.Cursor;
 import org.apache.jackrabbit.oak.spi.query.Filter;
 import org.apache.jackrabbit.oak.spi.query.IndexRow;
-import org.apache.jackrabbit.oak.spi.query.PropertyValues;
 import org.apache.jackrabbit.oak.spi.query.QueryIndex;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
-import org.apache.solr.client.solrj.SolrServer;
+import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
@@ -315,7 +315,7 @@ public class SolrQueryIndexTest {
 
     @Test
     public void testSize() throws Exception {
-        NodeState root = InitialContent.INITIAL_CONTENT;
+        NodeState root = InitialContentHelper.INITIAL_CONTENT;
         SelectorImpl selector = newSelector(root, "a");
         String sqlQuery = "select [jcr:path], [jcr:score] from [nt:base] as a where" +
                 " contains([jcr:content/*], 'founded')";
@@ -345,11 +345,11 @@ public class SolrQueryIndexTest {
 
     @Test
     public void testNoMoreThanThreeSolrRequests() throws Exception {
-        NodeState root = InitialContent.INITIAL_CONTENT;
+        NodeState root = InitialContentHelper.INITIAL_CONTENT;
         SelectorImpl selector = newSelector(root, "a");
         String sqlQuery = "select [jcr:path], [jcr:score] from [nt:base] as a where" +
                 " contains([jcr:content/*], 'founded')";
-        SolrServer solrServer = mock(SolrServer.class);
+        SolrClient solrServer = mock(SolrClient.class);
         SolrServerProvider solrServerProvider = mock(SolrServerProvider.class);
         when(solrServerProvider.getSearchingSolrServer()).thenReturn(solrServer);
         OakSolrConfigurationProvider configurationProvider = mock(OakSolrConfigurationProvider.class);
@@ -385,7 +385,7 @@ public class SolrQueryIndexTest {
 
     @Test
     public void testNoNegativeCost() throws Exception {
-        NodeState root = InitialContent.INITIAL_CONTENT;
+        NodeState root = InitialContentHelper.INITIAL_CONTENT;
         NodeBuilder builder = root.builder();
         builder.child("oak:index").child("solr")
                 .setProperty("usedProperties", Collections.singleton("name"), Type.STRINGS)
@@ -396,7 +396,7 @@ public class SolrQueryIndexTest {
         String query = "select * from [nt:base] as a where native('solr','select?q=searchKeywords:\"foo\"^20 text:\"foo\"^1 " +
                 "description:\"foo\"^8 something:\"foo\"^3 headline:\"foo\"^5 title:\"foo\"^10 &q.op=OR'";
         String sqlQuery = "select * from [nt:base] a where native('solr','" + query + "'";
-        SolrServer solrServer = mock(SolrServer.class);
+        SolrClient solrServer = mock(SolrClient.class);
         SolrServerProvider solrServerProvider = mock(SolrServerProvider.class);
         when(solrServerProvider.getSearchingSolrServer()).thenReturn(solrServer);
         OakSolrConfigurationProvider configurationProvider = mock(OakSolrConfigurationProvider.class);
@@ -432,7 +432,7 @@ public class SolrQueryIndexTest {
             assertTrue(c >= 0);
         }
     }
-    
+
     private static SelectorImpl newSelector(NodeState root, String name) {
         NodeTypeInfoProvider types = new NodeStateNodeTypeInfoProvider(root);
         NodeTypeInfo type = types.getNodeTypeInfo("nt:base");
@@ -462,5 +462,5 @@ public class SolrQueryIndexTest {
             return counter;
         }
     }
-    
+
 }

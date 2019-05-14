@@ -17,7 +17,6 @@
 package org.apache.jackrabbit.oak.benchmark;
 
 import java.util.List;
-import javax.annotation.Nonnull;
 import javax.jcr.Repository;
 
 import org.apache.jackrabbit.oak.Oak;
@@ -25,12 +24,13 @@ import org.apache.jackrabbit.oak.fixture.JcrCreator;
 import org.apache.jackrabbit.oak.fixture.OakRepositoryFixture;
 import org.apache.jackrabbit.oak.fixture.RepositoryFixture;
 import org.apache.jackrabbit.oak.jcr.Jcr;
-import org.apache.jackrabbit.oak.security.SecurityProviderImpl;
 import org.apache.jackrabbit.oak.security.authorization.composite.CompositeAuthorizationConfiguration;
+import org.apache.jackrabbit.oak.security.internal.SecurityProviderBuilder;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authorization.AuthorizationConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authorization.cug.impl.CugConfiguration;
+import org.jetbrains.annotations.NotNull;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -45,7 +45,7 @@ public class CugTest extends ReadDeepTreeTest {
     private final ConfigurationParameters params;
     private final boolean reverseOrder;
 
-    protected CugTest(boolean runAsAdmin, int itemsToRead, boolean singleSession, @Nonnull List<String> supportedPaths, boolean reverseOrder) {
+    protected CugTest(boolean runAsAdmin, int itemsToRead, boolean singleSession, @NotNull List<String> supportedPaths, boolean reverseOrder) {
         super(runAsAdmin, itemsToRead, false, singleSession);
         this.params = ConfigurationParameters.of(AuthorizationConfiguration.NAME, ConfigurationParameters.of(
                     "cugSupportedPaths", supportedPaths.toArray(new String[supportedPaths.size()]),
@@ -78,23 +78,22 @@ public class CugTest extends ReadDeepTreeTest {
     }
 
     protected SecurityProvider createSecurityProvider() {
-        return new TmpSecurityProvider(params, reverseOrder);
+        return newTestSecurityProvider(params, reverseOrder);
     }
 
-    private static final class TmpSecurityProvider extends SecurityProviderImpl {
-
-        private TmpSecurityProvider(@Nonnull ConfigurationParameters params, boolean reverseOrder) {
-            super(params);
-
-            AuthorizationConfiguration authorizationConfiguration = getConfiguration(AuthorizationConfiguration.class);
-            AuthorizationConfiguration defaultAuthorization = checkNotNull(((CompositeAuthorizationConfiguration) authorizationConfiguration).getDefaultConfig());
-            if (reverseOrder) {
-                bindAuthorizationConfiguration(defaultAuthorization);
-                bindAuthorizationConfiguration(new CugConfiguration(this));
-            } else {
-                bindAuthorizationConfiguration(new CugConfiguration(this));
-                bindAuthorizationConfiguration(defaultAuthorization);
-            }
+    private static SecurityProvider newTestSecurityProvider(@NotNull ConfigurationParameters params,
+            boolean reverseOrder) {
+        SecurityProvider delegate = SecurityProviderBuilder.newBuilder().with(params).build();
+        CompositeAuthorizationConfiguration authorizationConfiguration = (CompositeAuthorizationConfiguration) delegate
+                .getConfiguration((AuthorizationConfiguration.class));
+        AuthorizationConfiguration defaultAuthorization = checkNotNull(authorizationConfiguration.getDefaultConfig());
+        if (reverseOrder) {
+            authorizationConfiguration.addConfiguration(defaultAuthorization);
+            authorizationConfiguration.addConfiguration(new CugConfiguration(delegate));
+        } else {
+            authorizationConfiguration.addConfiguration(new CugConfiguration(delegate));
+            authorizationConfiguration.addConfiguration(defaultAuthorization);
         }
+        return delegate;
     }
 }

@@ -104,7 +104,7 @@ of the underlaying JCR node but only compares IDs and the user manager instance.
 * The `rep:password` property is no longer defined to be mandatory. Therefore a new user might be created without specifying a password. Note however, that `User#changePassword` does not allow to remove the password property.
 * Since version 1.1.0 Oak supports the new API to create dedicated system users [JCR-3802](https://issues.apache.org/jira/browse/JCR-3802).
 
-<a name="query"/>
+<a name="query"></a>
 #### Searching
 
 #### XPathQueryBuilder
@@ -149,7 +149,7 @@ history support. By default this feature is disabled.
 
 See section [Password History](history.html) for details.
 
-<a name="representation"/>
+<a name="representation"></a>
 ### Representation in the Repository
 
 The following block lists the built-in node types related to user management tasks:
@@ -201,7 +201,7 @@ The following block lists the built-in node types related to user management tas
       + * (rep:Members) = rep:Members protected multiple
       - * (WEAKREFERENCE) protected < 'rep:Authorizable'
 
-<a name="validation"/>
+<a name="validation"></a>
 ### Validation
 
 The consistency of this content structure is asserted by a dedicated `UserValidator`.
@@ -220,11 +220,11 @@ The corresponding errors are all of type `Constraint` with the following codes:
 | 0028              | Attempt to create outside of configured scope            |
 | 0029              | Intermediate folders not rep:AuthorizableFolder          |
 | 0030              | Missing uuid for group (check for cyclic membership)     |
-| 0031              | Cyclic group membership                                  |
+| <s>0031</s>        | <s>Cyclic group membership</s> (see [OAK-6072])         |
 | 0032              | Attempt to set password with system user                 |
 | 0033              | Attempt to add rep:pwd node to a system user             |
 
-<a name="configuration"/>
+<a name="configuration"></a>
 ### Configuration
 
 The following user management specific methods are present with the [UserConfiguration]
@@ -268,7 +268,7 @@ detail in section [Caching Results of Principal Resolution](../principal/cache.h
 It is not related to user management s.str. but affects the implementation
 specific `PrincipalProvider` implementation exposed by `UserConfiguration.getUserPrincipalProvider`.
 
-<a name="pluggability"/>
+<a name="pluggability"></a>
 ### Pluggability
 
 Within the default user management implementation the following parts can be
@@ -327,3 +327,4 @@ implementation.
 [UserConfiguration]: /oak/docs/apidocs/org/apache/jackrabbit/oak/spi/security/user/UserConfiguration.html
 [UserAuthenticationFactory]: /oak/docs/apidocs/org/apache/jackrabbit/oak/spi/security/user/UserAuthenticationFactory.html
 [Authentication]: /oak/docs/apidocs/org/apache/jackrabbit/oak/spi/security/authentication/Authentication.html
+[OAK-6072]: https://issues.apache.org/jira/browse/OAK-6072

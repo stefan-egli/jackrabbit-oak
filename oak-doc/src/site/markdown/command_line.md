@@ -21,6 +21,18 @@
 
 This tool supports maintenance operations such as backup and compaction.
 
+Some of the documentation of this tool is found at
+https://github.com/apache/jackrabbit-oak/tree/trunk/oak-run
+and some at
+http://jackrabbit.apache.org/oak/docs/query/pre-extract-text.html
+and some at
+http://jackrabbit.apache.org/oak/docs/query/oak-run-indexing.html
+
+#### Compatibility
+
+We recommend to use the same version of `oak-run` as the one of `oak-core`
+deployed on your system.
+
 #### Backup
 
 To back up a repository, use:
@@ -35,7 +47,7 @@ The `<backup>` option is the target directory.
 
 To list the checkpoints of a repository, use:
 
-    java -mx4g -jar oak-run-*.jar checkpoint <repository>
+    java -mx4g -jar oak-run-*.jar checkpoints <repository>
 
 When using the (default) Tar storage, the `<repository>` setting is the path to the directory
 that contains the segment  (data*.tar) files.
@@ -44,9 +56,9 @@ that contains the segment  (data*.tar) files.
 
 The oak-run compact operation may be used to perform an offline compaction:
 
-    java -mx4g -jar oak-run-*.jar compact <repository> [--force]
+    java -mx4g -jar oak-run-*.jar compact <repository>
 
-It makes sense to find and remove the old checkpoints, using the `checkpoint`
+It makes sense to find and remove the old checkpoints, using the `checkpoints`
 command described above.
 
 #### Index Management
@@ -55,18 +67,17 @@ The oak-run index operation is used to [manage indexes](./query/index-management
 
 #### System properties supported by the oak-run
 
-When performing operations on the SegmentNodeStore (eg. backup, checkpoint, compact), it's
+When performing operations on the SegmentNodeStore (eg. backup, checkpoints, compact), it's
 possible to tweak various system properties to get the optimal performance. These are:
 
 * `cache` - cache size for the SegmentNodeStore (default: `256`),
 * `compaction-progress-log` - how many entries should be compacted between log messages (default: `150000`),
-* `compress-interval` - number of map entries to keep until compressing this map (default: `100000`),
 * `update.limit` - threshold for the flush of a temporary transaction to disk (default: `10000`),
 * `tar.memoryMapped` - allow to use memory mapped files to reduce memory usage (default: `false`),
 
 Example:
 
-    java -Dtar.memoryMapped=true -mx4g -jar oak-run-*.jar checkpoint <repository>
+    java -Dtar.memoryMapped=true -mx4g -jar oak-run-*.jar checkpoints <repository>
 
 #### Analyzing Thread Dumps ####
 
@@ -84,5 +95,5 @@ with the file.
 
     wget https://s.apache.org/oak-mongo.js
     mongo --shell oak-mongo.js
-    
+
 Now the MongoDB shell has an `oak` namespace with [additional functions](oak-mongo-js/oak.html).

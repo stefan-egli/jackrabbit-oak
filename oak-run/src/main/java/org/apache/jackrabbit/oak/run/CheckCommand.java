@@ -17,69 +17,97 @@
 
 package org.apache.jackrabbit.oak.run;
 
-import static org.apache.jackrabbit.oak.segment.FileStoreHelper.isValidFileStoreOrFail;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import joptsimple.ArgumentAcceptingOptionSpec;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
-import org.apache.jackrabbit.oak.commons.run.Command;
+import org.apache.jackrabbit.oak.run.commons.Command;
+import org.apache.jackrabbit.oak.segment.tool.Check;
 
 class CheckCommand implements Command {
 
     @Override
     public void execute(String... args) throws Exception {
         OptionParser parser = new OptionParser();
-        ArgumentAcceptingOptionSpec<String> journal = parser.accepts(
-                "journal", "journal file")
-                .withRequiredArg().ofType(String.class).defaultsTo("journal.log");
-        OptionSpec<?> deep = parser.accepts(
-                "deep", "<deprecated> enable deep consistency checking.");
-        ArgumentAcceptingOptionSpec<Long> notify = parser.accepts(
-                "notify", "number of seconds between progress notifications")
-                .withRequiredArg().ofType(Long.class).defaultsTo(Long.MAX_VALUE);
+        OptionSpec<File> journal = parser.accepts("journal", "journal file")
+            .withRequiredArg()
+            .ofType(File.class);
+        OptionSpec<Long> notify = parser.accepts("notify", "number of seconds between progress notifications")
+            .withRequiredArg()
+            .ofType(Long.class)
+            .defaultsTo(Long.MAX_VALUE);
         OptionSpec<?> bin = parser.accepts("bin", "read the content of binary properties");
-        ArgumentAcceptingOptionSpec<String> filter = parser.accepts(
-                "filter", "comma separated content paths to be checked")
-                .withRequiredArg().ofType(String.class).withValuesSeparatedBy(',').defaultsTo("/");
+        OptionSpec<String> filter = parser.accepts("filter", "comma separated content paths to be checked")
+            .withRequiredArg()
+            .ofType(String.class)
+            .withValuesSeparatedBy(',')
+            .defaultsTo("/");
+        OptionSpec<?> head = parser.accepts("head", "checks only latest /root (i.e without checkpoints)");
+        OptionSpec<String> cp = parser.accepts("checkpoints", "checks only specified checkpoints (comma separated); use --checkpoints all to check all checkpoints")
+            .withOptionalArg()
+            .ofType(String.class)
+            .withValuesSeparatedBy(',')
+            .defaultsTo("all");
         OptionSpec<?> ioStatistics = parser.accepts("io-stats", "Print I/O statistics (only for oak-segment-tar)");
-
+        OptionSpec<File> dir = parser.nonOptions()
+            .describedAs("path")
+            .ofType(File.class);
         OptionSet options = parser.parse(args);
-        
-        PrintWriter out = new PrintWriter(System.out, true);
-        PrintWriter err = new PrintWriter(System.err, true);
 
-        if (options.nonOptionArguments().size() != 1) {
-            printUsage(parser, err);
+        if (options.valuesOf(dir).isEmpty()) {
+            printUsageAndExit(parser, "Segment Store path not specified");
         }
 
-        File dir = isValidFileStoreOrFail(new File(options.nonOptionArguments().get(0).toString()));
-        String journalFileName = journal.value(options);
-        long debugLevel = notify.value(options);
-        Set<String> filterPaths = new LinkedHashSet<String>(filter.values(options));
-
-        if (options.has(deep)) {
-            printUsage(parser, err, "The --deep option was deprecated! Please do not use it in the future!"
-                    , "A deep scan of the content tree, traversing every node, will be performed by default.");
+        if (options.valuesOf(dir).size() > 1) {
+            printUsageAndExit(parser, "Too many Segment Store paths specified");
         }
-        
-        SegmentTarUtils.check(dir, journalFileName, debugLevel, options.has(bin), filterPaths, options.has(ioStatistics), out, err);
+
+        Check.Builder builder = Check.builder()
+            .withPath(options.valueOf(dir))
+            .withDebugInterval(notify.value(options))
+            .withCheckBinaries(options.has(bin))
+            .withCheckHead(shouldCheckHead(options, head, cp))
+            .withCheckpoints(toCheckpointsSet(options, head, cp))
+            .withFilterPaths(toSet(options, filter))
+            .withIOStatistics(options.has(ioStatistics))
+            .withOutWriter(new PrintWriter(System.out, true))
+            .withErrWriter(new PrintWriter(System.err, true));
+
+        if (options.has(journal)) {
+            builder.withJournal(journal.value(options));
+        }
+
+        System.exit(builder.build().run());
     }
 
-    private void printUsage(OptionParser parser, PrintWriter err, String... messages) throws IOException {
+    private void printUsageAndExit(OptionParser parser, String... messages) throws IOException {
         for (String message : messages) {
-            err.println(message);
+            System.err.println(message);
         }
-        
-        err.println("usage: check path/to/segmentstore <options>");
-        parser.printHelpOn(err);
+        System.err.println("usage: check path/to/segmentstore <options>");
+        parser.printHelpOn(System.err);
         System.exit(1);
+    }
+
+    private static Set<String> toSet(OptionSet options, OptionSpec<String> option) {
+        return new LinkedHashSet<>(option.values(options));
+    }
+
+    private static Set<String> toCheckpointsSet(OptionSet options, OptionSpec<?> head, OptionSpec<String> cp) {
+        Set<String> checkpoints = new LinkedHashSet<>();
+        if (options.has(cp) || !options.has(head)) {
+            checkpoints.addAll(cp.values(options));
+        }
+        return checkpoints;
+    }
+
+    private static boolean shouldCheckHead(OptionSet options, OptionSpec<?> head, OptionSpec<String> cp) {
+        return !options.has(cp) || options.has(head);
     }
 
 }

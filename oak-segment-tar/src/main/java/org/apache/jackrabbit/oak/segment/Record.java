@@ -18,7 +18,8 @@
  */
 package org.apache.jackrabbit.oak.segment;
 
-import javax.annotation.Nonnull;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Record within a segment.
@@ -29,11 +30,11 @@ class Record {
         return a instanceof Record && fastEquals((Record) a, b);
     }
 
-    private static boolean fastEquals(@Nonnull Record a, Object b) {
+    private static boolean fastEquals(@NotNull Record a, Object b) {
         return b instanceof Record && fastEquals(a, (Record) b);
     }
 
-    private static boolean fastEquals(@Nonnull Record a, @Nonnull Record b) {
+    private static boolean fastEquals(@NotNull Record a, @NotNull Record b) {
         return a == b || (a.recordNumber == b.recordNumber && a.segmentId.equals(b.segmentId));
     }
 
@@ -52,11 +53,11 @@ class Record {
      *
      * @param id record identified
      */
-    protected Record(@Nonnull RecordId id) {
+    protected Record(@NotNull RecordId id) {
         this(id.getSegmentId(), id.getRecordNumber());
     }
 
-    protected Record(@Nonnull SegmentId segmentId, int recordNumber) {
+    protected Record(@NotNull SegmentId segmentId, int recordNumber) {
         this.segmentId = segmentId;
         this.recordNumber = recordNumber;
     }
@@ -81,6 +82,16 @@ class Record {
      */
     public RecordId getRecordId() {
         return new RecordId(segmentId, recordNumber);
+    }
+
+    /**
+     * Get the underlying segment's gc generation. Might cause the segment to
+     * get loaded if the generation info is missing
+     * @return the segment's gc generation
+     */
+    @NotNull
+    public GCGeneration getGcGeneration() {
+        return segmentId.getGcGeneration();
     }
 
     //------------------------------------------------------------< Object >--

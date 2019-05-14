@@ -28,13 +28,13 @@ import org.apache.jackrabbit.oak.plugins.index.solr.configuration.nodestate.Node
 import org.apache.jackrabbit.oak.plugins.index.solr.index.SolrIndexEditorProvider;
 import org.apache.jackrabbit.oak.plugins.index.solr.query.SolrQueryIndexProvider;
 import org.apache.jackrabbit.oak.plugins.index.solr.util.SolrIndexInitializer;
-import org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent;
+import org.apache.jackrabbit.oak.InitialContent;
 import org.apache.jackrabbit.oak.segment.SegmentNodeStoreBuilders;
 import org.apache.jackrabbit.oak.segment.memory.MemoryStore;
 import org.apache.jackrabbit.oak.spi.commit.EditorHook;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
-import org.apache.solr.client.solrj.SolrServer;
+import org.apache.solr.client.solrj.SolrClient;
 import org.junit.After;
 import org.junit.Before;
 
@@ -45,7 +45,7 @@ public abstract class SolrBaseTest {
 
     protected NodeStore store;
     protected TestUtils provider;
-    protected SolrServer server;
+    protected SolrClient server;
     protected OakSolrConfiguration configuration;
     protected EditorHook hook;
     private ContentRepository repository;

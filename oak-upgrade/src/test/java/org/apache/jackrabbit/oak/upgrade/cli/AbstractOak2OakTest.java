@@ -17,7 +17,8 @@
 package org.apache.jackrabbit.oak.upgrade.cli;
 
 import static java.util.Collections.singletonMap;
-import static junit.framework.Assert.assertFalse;
+import static org.apache.jackrabbit.oak.plugins.document.secondary.DelegatingDocumentNodeState.PROP_LAST_REV;
+import static org.apache.jackrabbit.oak.plugins.document.secondary.DelegatingDocumentNodeState.PROP_REVISION;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -31,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
-import javax.annotation.Nullable;
 import javax.jcr.Node;
 import javax.jcr.Property;
 import javax.jcr.RepositoryException;
@@ -40,16 +40,16 @@ import javax.jcr.SimpleCredentials;
 import javax.jcr.Value;
 
 import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.jackrabbit.oak.api.Blob;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
-import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.commons.IOUtils;
 import org.apache.jackrabbit.oak.jcr.Jcr;
 import org.apache.jackrabbit.oak.jcr.repository.RepositoryImpl;
 import org.apache.jackrabbit.oak.plugins.document.DocumentNodeState;
+import org.apache.jackrabbit.oak.plugins.document.Revision;
+import org.apache.jackrabbit.oak.plugins.document.RevisionVector;
 import org.apache.jackrabbit.oak.plugins.index.reference.ReferenceIndexProvider;
 import org.apache.jackrabbit.oak.plugins.segment.SegmentNodeState;
 import org.apache.jackrabbit.oak.spi.commit.CommitInfo;
@@ -60,8 +60,8 @@ import org.apache.jackrabbit.oak.spi.state.NodeStore;
 import org.apache.jackrabbit.oak.upgrade.RepositorySidegrade;
 import org.apache.jackrabbit.oak.upgrade.cli.container.NodeStoreContainer;
 import org.apache.jackrabbit.oak.upgrade.cli.container.SegmentNodeStoreContainer;
-import org.apache.jackrabbit.oak.upgrade.cli.container.SegmentTarNodeStoreContainer;
 import org.apache.jackrabbit.oak.upgrade.cli.parser.CliArgumentException;
+import org.jetbrains.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -169,8 +169,9 @@ public abstract class AbstractOak2OakTest {
         verifyBlob(session);
         if (supportsCheckpointMigration()) {
             verifyCheckpoint();
-        } else {
-            verifyEmptyAsync();
+        }
+        if (supportsMetadataMigration()) {
+            verifyMetadata();
         }
     }
 
@@ -242,6 +243,18 @@ public abstract class AbstractOak2OakTest {
         }
     }
 
+    private void verifyMetadata() {
+        NodeState root = destination.getRoot();
+        assertTrue(root.hasProperty(PROP_REVISION));
+        assertTrue(root.hasProperty(PROP_LAST_REV));
+        RevisionVector.fromString(root.getString(PROP_REVISION));
+        Revision.fromString(root.getString(PROP_LAST_REV));
+
+        NodeState appsNode = destination.getRoot().getChildNode("apps");
+        assertTrue(appsNode.hasProperty(PROP_LAST_REV));
+        Revision.fromString(appsNode.getString(PROP_LAST_REV));
+    }
+
     private static void assertSameRecord(NodeState ns1, NodeState ns2) {
         String recordId1 = getRecordId(ns1);
         String recordId2 = getRecordId(ns2);
@@ -261,13 +274,11 @@ public abstract class AbstractOak2OakTest {
         }
     }
 
-    // OAK-2869
-    protected void verifyEmptyAsync() {
-        NodeState state = destination.getRoot().getChildNode(":async");
-        assertFalse(state.hasProperty("test"));
+    protected boolean supportsCheckpointMigration() {
+        return false;
     }
 
-    protected boolean supportsCheckpointMigration() {
+    protected boolean supportsMetadataMigration() {
         return false;
     }
 }

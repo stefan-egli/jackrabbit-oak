@@ -18,12 +18,11 @@ package org.apache.jackrabbit.oak.spi.security.authentication.external;
 
 import java.util.HashMap;
 import java.util.Map;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -108,7 +107,7 @@ public class ExternalIdentityRefTest {
 
     @Test
     public void testNotEquals() {
-        Map<ExternalIdentityRef, ExternalIdentityRef> notEqual = new HashMap();
+        Map<ExternalIdentityRef, ExternalIdentityRef> notEqual = new HashMap<>();
         notEqual.put(refNullProvider, ref);
         notEqual.put(refEmptyProvider, ref);
         notEqual.put(refNullProvider, null);
@@ -130,37 +129,37 @@ public class ExternalIdentityRefTest {
     @Test
     public void testNotEqualsExternalIdentity() {
         assertFalse(ref.equals(new ExternalIdentity() {
-            @Nonnull
+            @NotNull
             @Override
             public ExternalIdentityRef getExternalId() {
                 return ref;
             }
 
-            @Nonnull
+            @NotNull
             @Override
             public String getId() {
                 return ref.getId();
             }
 
-            @Nonnull
+            @NotNull
             @Override
             public String getPrincipalName() {
                 return ref.getId();
             }
 
-            @CheckForNull
+            @Nullable
             @Override
             public String getIntermediatePath() {
                 return null;
             }
 
-            @Nonnull
+            @NotNull
             @Override
             public Iterable<ExternalIdentityRef> getDeclaredGroups() {
                 return ImmutableSet.of();
             }
 
-            @Nonnull
+            @NotNull
             @Override
             public Map<String, ?> getProperties() {
                 return ImmutableMap.of();

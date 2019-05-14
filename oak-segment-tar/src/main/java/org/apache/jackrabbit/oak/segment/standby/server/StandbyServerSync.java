@@ -19,11 +19,12 @@
 
 package org.apache.jackrabbit.oak.segment.standby.server;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 import java.io.Closeable;
 import java.lang.management.ManagementFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.annotation.Nonnull;
 import javax.management.InstanceNotFoundException;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -32,10 +33,100 @@ import javax.management.StandardMBean;
 import org.apache.jackrabbit.oak.segment.file.FileStore;
 import org.apache.jackrabbit.oak.segment.standby.jmx.StandbyStatusMBean;
 import org.apache.jackrabbit.oak.segment.standby.store.CommunicationObserver;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class StandbyServerSync implements StandbyStatusMBean, StateConsumer, StoreProvider, Closeable {
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static class Builder {
+
+        private int port;
+
+        private FileStore fileStore;
+
+        private int blobChunkSize;
+
+        private boolean secure;
+
+        private String[] allowedClientIPRanges;
+
+        private StandbyBlobReader standbyBlobReader;
+
+        private StandbyHeadReader standbyHeadReader;
+
+        private StandbyReferencesReader standbyReferencesReader;
+
+        private StandbySegmentReader standbySegmentReader;
+
+        private Builder() {
+            // Prevent external instantiation
+        }
+
+        public Builder withPort(int port) {
+            checkArgument(port > 0, "port");
+            this.port = port;
+            return this;
+        }
+
+        public Builder withFileStore(FileStore fileStore) {
+            checkArgument(fileStore != null, "fileStore");
+            this.fileStore = fileStore;
+            return this;
+        }
+
+        public Builder withBlobChunkSize(int blobChunkSize) {
+            checkArgument(blobChunkSize > 0, "blobChunkSize");
+            this.blobChunkSize = blobChunkSize;
+            return this;
+        }
+
+        public Builder withSecureConnection(boolean secure) {
+            this.secure = secure;
+            return this;
+        }
+
+        public Builder withAllowedClientIPRanges(String[] allowedClientIPRanges) {
+            this.allowedClientIPRanges = allowedClientIPRanges;
+            return this;
+        }
+
+        Builder withStandbyBlobReader(StandbyBlobReader standbyBlobReader) {
+            checkArgument(standbyBlobReader != null, "standbyBlobReader");
+            this.standbyBlobReader = standbyBlobReader;
+            return this;
+        }
+
+        Builder withStandbyHeadReader(StandbyHeadReader standbyHeadReader) {
+            checkArgument(standbyHeadReader != null, "standbyHeadReader");
+            this.standbyHeadReader = standbyHeadReader;
+            return this;
+        }
+
+        Builder withStandbyReferencesReader(StandbyReferencesReader standbyReferencesReader) {
+            checkArgument(standbyReferencesReader != null, "standbyReferencesReader");
+            this.standbyReferencesReader = standbyReferencesReader;
+            return this;
+        }
+
+        Builder withStandbySegmentReader(StandbySegmentReader standbySegmentReader) {
+            checkArgument(standbySegmentReader != null, "standbySegmentReader");
+            this.standbySegmentReader = standbySegmentReader;
+            return this;
+        }
+
+        public StandbyServerSync build() {
+            checkArgument(port > 0);
+            checkArgument(fileStore != null);
+            checkArgument(blobChunkSize > 0);
+            return new StandbyServerSync(this);
+        }
+
+    }
 
     private static final Logger log = LoggerFactory.getLogger(StandbyServer.class);
 
@@ -48,30 +139,33 @@ public class StandbyServerSync implements StandbyStatusMBean, StateConsumer, Sto
     private final String[] allowedClientIPRanges;
 
     private final boolean secure;
+    
+    private final int blobChunkSize;
 
     private volatile String state;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
+    private final StandbyBlobReader standbyBlobReader;
+
+    private final StandbyHeadReader standbyHeadReader;
+
+    private final StandbyReferencesReader standbyReferencesReader;
+
+    private final StandbySegmentReader standbySegmentReader;
+
     private StandbyServer server;
 
-    public StandbyServerSync(final int port, final FileStore fileStore) {
-        this(port, fileStore, null, false);
-    }
-
-    public StandbyServerSync(final int port, final FileStore fileStore, final boolean secure) {
-        this(port, fileStore, null, secure);
-    }
-
-    public StandbyServerSync(final int port, final FileStore fileStore, final String[] allowedClientIPRanges) {
-        this(port, fileStore, allowedClientIPRanges, false);
-    }
-
-    public StandbyServerSync(final int port, final FileStore fileStore, final String[] allowedClientIPRanges, final boolean secure) {
-        this.port = port;
-        this.fileStore = fileStore;
-        this.allowedClientIPRanges = allowedClientIPRanges;
-        this.secure = secure;
+    private StandbyServerSync(Builder builder) {
+        this.port = builder.port;
+        this.fileStore = builder.fileStore;
+        this.blobChunkSize = builder.blobChunkSize;
+        this.allowedClientIPRanges = builder.allowedClientIPRanges;
+        this.secure = builder.secure;
+        this.standbyBlobReader = builder.standbyBlobReader;
+        this.standbyHeadReader = builder.standbyHeadReader;
+        this.standbyReferencesReader = builder.standbyReferencesReader;
+        this.standbySegmentReader = builder.standbySegmentReader;
         this.observer = new CommunicationObserver("primary");
 
         final MBeanServer jmxServer = ManagementFactory.getPlatformMBeanServer();
@@ -102,12 +196,16 @@ public class StandbyServerSync implements StandbyStatusMBean, StateConsumer, Sto
         state = STATUS_STARTING;
 
         try {
-            server = StandbyServer.builder(port, this)
-                    .secure(secure)
-                    .allowIPRanges(allowedClientIPRanges)
-                    .withStateConsumer(this)
-                    .withObserver(observer)
-                    .build();
+            server = StandbyServer.builder(port, this, blobChunkSize)
+                .secure(secure)
+                .allowIPRanges(allowedClientIPRanges)
+                .withStateConsumer(this)
+                .withObserver(observer)
+                .withStandbyBlobReader(standbyBlobReader)
+                .withStandbyHeadReader(standbyHeadReader)
+                .withStandbyReferencesReader(standbyReferencesReader)
+                .withStandbySegmentReader(standbySegmentReader)
+                .build();
             server.start();
 
             state = STATUS_RUNNING;
@@ -149,7 +247,7 @@ public class StandbyServerSync implements StandbyStatusMBean, StateConsumer, Sto
         state = STATUS_CLOSED;
     }
 
-    @Nonnull
+    @NotNull
     @Override
     public String getMode() {
         return "primary";

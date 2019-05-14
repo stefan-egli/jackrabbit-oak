@@ -19,32 +19,47 @@ package org.apache.jackrabbit.oak.run;
 
 import static java.util.Arrays.asList;
 import static org.apache.jackrabbit.oak.commons.PropertiesUtil.populate;
+import static org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentNodeStoreBuilder.newMongoDocumentNodeStoreBuilder;
+import static org.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentNodeStoreBuilder.newRDBDocumentNodeStoreBuilder;
+import static org.apache.jackrabbit.oak.segment.file.FileStoreBuilder.fileStoreBuilder;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Dictionary;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
-import javax.annotation.Nullable;
 import javax.jcr.RepositoryException;
+import javax.sql.DataSource;
 
+import joptsimple.OptionSpecBuilder;
 import org.apache.commons.io.FileUtils;
 import org.apache.felix.cm.file.ConfigurationHandler;
 import org.apache.jackrabbit.core.data.DataStore;
 import org.apache.jackrabbit.core.data.DataStoreException;
 import org.apache.jackrabbit.oak.blob.cloud.azure.blobstorage.AzureDataStore;
-import org.apache.jackrabbit.oak.blob.cloud.aws.s3.SharedS3DataStore;
+import org.apache.jackrabbit.oak.blob.cloud.s3.S3DataStore;
 import org.apache.jackrabbit.oak.plugins.blob.datastore.DataStoreBlobStore;
 import org.apache.jackrabbit.oak.plugins.blob.datastore.OakFileDataStore;
-import org.apache.jackrabbit.oak.plugins.document.DocumentMK;
 import org.apache.jackrabbit.oak.plugins.document.DocumentNodeStore;
+import org.apache.jackrabbit.oak.plugins.document.DocumentNodeStoreBuilder;
+import org.apache.jackrabbit.oak.plugins.document.LeaseCheckMode;
+import org.apache.jackrabbit.oak.plugins.document.rdb.RDBDataSourceFactory;
+import org.apache.jackrabbit.oak.plugins.document.rdb.RDBOptions;
 import org.apache.jackrabbit.oak.plugins.document.util.MongoConnection;
+import org.apache.jackrabbit.oak.run.cli.DummyDataStore;
+import org.apache.jackrabbit.oak.segment.SegmentNodeStoreBuilders;
+import org.apache.jackrabbit.oak.segment.file.FileStore;
+import org.apache.jackrabbit.oak.segment.file.InvalidFileStoreVersionException;
 import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
+import org.jetbrains.annotations.Nullable;
 
 import com.google.common.collect.Maps;
 import com.google.common.io.Closer;
@@ -58,39 +73,137 @@ import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
 
 class Utils {
-    
+
     private static final long MB = 1024 * 1024;
 
-    public static NodeStore bootstrapNodeStore(String[] args, Closer closer, String h) throws IOException {
-        //TODO add support for other NodeStore flags
-        OptionParser parser = new OptionParser();
-        OptionSpec<Integer> clusterId = parser
-                .accepts("clusterId", "MongoMK clusterId").withRequiredArg()
-                .ofType(Integer.class).defaultsTo(0);
-        OptionSpec<Void> disableBranchesSpec = parser.
-                accepts("disableBranches", "disable branches");    
-        OptionSpec<Integer> cacheSizeSpec = parser.
-                accepts("cacheSize", "cache size").withRequiredArg().
-                ofType(Integer.class).defaultsTo(0);         
-        OptionSpec<?> help = parser.acceptsAll(asList("h", "?", "help"),
-                "show help").forHelp();
-        OptionSpec<String> nonOption = parser
-                .nonOptions(h);
+    public static class NodeStoreOptions {
 
-        OptionSet options = parser.parse(args);
-        List<String> nonOptions = nonOption.values(options);
+        public final OptionParser parser;
+        public final OptionSpec<String> rdbjdbcuser;
+        public final OptionSpec<String> rdbjdbcpasswd;
+        public final OptionSpec<String> rdbtableprefix;
+        public final OptionSpec<Integer> clusterId;
+        public final OptionSpec<Void> disableBranchesSpec;
+        public final OptionSpec<Integer> cacheSizeSpec;
+        public final OptionSpec<?> help;
+        public final OptionSpec<String> nonOption;
 
-        if (options.has(help)) {
-            parser.printHelpOn(System.out);
-            System.exit(0);
+        protected OptionSet options;
+
+        public NodeStoreOptions(String usage) {
+            parser = new OptionParser();
+            rdbjdbcuser = parser
+                    .accepts("rdbjdbcuser", "RDB JDBC user")
+                    .withOptionalArg().defaultsTo("");
+            rdbjdbcpasswd = parser
+                    .accepts("rdbjdbcpasswd", "RDB JDBC password")
+                    .withOptionalArg().defaultsTo("");
+            rdbtableprefix = parser
+                    .accepts("rdbtableprefix", "RDB table prefix")
+                    .withOptionalArg();
+            clusterId = parser
+                    .accepts("clusterId", "MongoMK clusterId")
+                    .withRequiredArg().ofType(Integer.class).defaultsTo(0);
+            disableBranchesSpec = parser.
+                    accepts("disableBranches", "disable branches");
+            cacheSizeSpec = parser.
+                    accepts("cacheSize", "cache size")
+                    .withRequiredArg().ofType(Integer.class).defaultsTo(0);
+            help = parser.acceptsAll(asList("h", "?", "help"),"show help").forHelp();
+            nonOption = parser.nonOptions(usage);
         }
 
-        if (nonOptions.isEmpty()) {
-            parser.printHelpOn(System.err);
+        public NodeStoreOptions parse(String[] args) {
+            assert(options == null);
+            options = parser.parse(args);
+            return this;
+        }
+
+        public void printHelpOn(OutputStream sink) throws IOException {
+            parser.printHelpOn(sink);
+            System.exit(2);
+        }
+
+        public String getStoreArg() {
+            List<String> nonOptions = nonOption.values(options);
+            return nonOptions.size() > 0? nonOptions.get(0) : "";
+        }
+
+        public List<String> getOtherArgs() {
+            List<String> args = new ArrayList<String>(nonOption.values(options));
+            if (args.size() > 0) {
+                args.remove(0);
+            }
+            return args;
+        }
+
+        public int getClusterId() {
+            return clusterId.value(options);
+        }
+
+        public boolean disableBranchesSpec() {
+            return options.has(disableBranchesSpec);
+        }
+
+        public int getCacheSize() {
+            return cacheSizeSpec.value(options);
+        }
+
+        public String getRDBJDBCUser() {
+            return rdbjdbcuser.value(options);
+        }
+
+        public String getRDBJDBCPassword() {
+            return rdbjdbcpasswd.value(options);
+        }
+
+        public String getRDBTablePrefix() {
+            return rdbtableprefix.value(options);
+        }
+    }
+
+    public static NodeStore bootstrapNodeStore(String[] args, Closer closer, String h) throws IOException, InvalidFileStoreVersionException {
+        return bootstrapNodeStore(new NodeStoreOptions(h).parse(args), closer);
+    }
+
+    public static NodeStore bootstrapNodeStore(NodeStoreOptions options, Closer closer) throws IOException, InvalidFileStoreVersionException {
+        String src = options.getStoreArg();
+        if (src == null || src.length() == 0) {
+            options.printHelpOn(System.err);
             System.exit(1);
         }
 
-        String src = nonOptions.get(0);
+        if (src.startsWith(MongoURI.MONGODB_PREFIX) || src.startsWith("jdbc")) {
+            DocumentNodeStoreBuilder<?> builder = createDocumentMKBuilder(options, closer);
+            if (builder != null) {
+                DocumentNodeStore store = builder.build();
+                closer.register(asCloseable(store));
+                return store;
+            }
+        }
+
+        FileStore fileStore = fileStoreBuilder(new File(src))
+            .withStrictVersionCheck(true)
+            .build();
+        closer.register(fileStore);
+        return SegmentNodeStoreBuilders.builder(fileStore).build();
+    }
+
+    @Nullable
+    static DocumentNodeStoreBuilder<?> createDocumentMKBuilder(String[] args, Closer closer, String h) throws IOException {
+        return createDocumentMKBuilder(new NodeStoreOptions(h).parse(args), closer);
+    }
+
+    @Nullable
+    static DocumentNodeStoreBuilder<?> createDocumentMKBuilder(NodeStoreOptions options,
+                                                               Closer closer)
+            throws IOException {
+        String src = options.getStoreArg();
+        if (src == null || src.length() == 0) {
+            options.printHelpOn(System.err);
+            System.exit(1);
+        }
+        DocumentNodeStoreBuilder<?> builder;
         if (src.startsWith(MongoURI.MONGODB_PREFIX)) {
             MongoClientURI uri = new MongoClientURI(src);
             if (uri.getDatabase() == null) {
@@ -100,24 +213,29 @@ class Utils {
             }
             MongoConnection mongo = new MongoConnection(uri.getURI());
             closer.register(asCloseable(mongo));
-            DocumentMK.Builder builder = new DocumentMK.Builder();
-            builder.
-                setMongoDB(mongo.getDB()).
-                setLeaseCheck(false).
-                setClusterId(clusterId.value(options));
-            if (options.has(disableBranchesSpec)) {
-                builder.disableBranches();
+            builder = newMongoDocumentNodeStoreBuilder().setMongoDB(
+                    mongo.getMongoClient(), mongo.getDBName());
+        } else if (src.startsWith("jdbc")) {
+            RDBOptions opts = new RDBOptions();
+            if (options.getRDBTablePrefix() != null) {
+                opts = opts.tablePrefix(options.getRDBTablePrefix());
             }
-            int cacheSize = cacheSizeSpec.value(options);
-            if (cacheSize != 0) {
-                builder.memoryCacheSize(cacheSize * MB);
-            }
-            DocumentNodeStore store = builder.getNodeStore();
-            closer.register(asCloseable(store));
-            return store;
+            DataSource ds = RDBDataSourceFactory.forJdbcUrl(src, options.getRDBJDBCUser(), options.getRDBJDBCPassword());
+            builder = newRDBDocumentNodeStoreBuilder().setRDBConnection(ds, opts);
+        } else {
+            return null;
         }
-
-        return SegmentTarUtils.bootstrapNodeStore(src, closer);
+        builder.
+                setLeaseCheckMode(LeaseCheckMode.DISABLED).
+                setClusterId(options.getClusterId());
+        if (options.disableBranchesSpec()) {
+            builder.disableBranches();
+        }
+        int cacheSize = options.getCacheSize();
+        if (cacheSize != 0) {
+            builder.memoryCacheSize(cacheSize * MB);
+        }
+        return builder;
     }
 
     @Nullable
@@ -132,21 +250,24 @@ class Utils {
             parser.accepts("fds", "FileDataStore config").withRequiredArg().ofType(String.class);
         ArgumentAcceptingOptionSpec<String> azureBlobDSConfig =
             parser.accepts("azureblobds", "AzureBlobStorageDataStore config").withRequiredArg().ofType(String.class);
+        OptionSpecBuilder nods = parser.accepts("nods", "No DataStore ");
 
 
         OptionSet options = parser.parse(args);
 
-        if (!options.has(s3dsConfig) && !options.has(fdsConfig) && !options.has(azureBlobDSConfig)) {
+        if (!options.has(s3dsConfig) && !options.has(fdsConfig) && !options.has(azureBlobDSConfig) && !options.has(nods)) {
             return null;
         }
 
         DataStore delegate;
         if (options.has(s3dsConfig)) {
-            SharedS3DataStore s3ds = new SharedS3DataStore();
+            S3DataStore s3ds = new S3DataStore();
             String cfgPath = s3dsConfig.value(options);
             Properties props = loadAndTransformProps(cfgPath);
             s3ds.setProperties(props);
-            s3ds.init(null);
+            File homeDir =  Files.createTempDir();
+            closer.register(asCloseable(homeDir));
+            s3ds.init(homeDir.getAbsolutePath());
             delegate = s3ds;
         } else if (options.has(azureBlobDSConfig)) {
             AzureDataStore azureds = new AzureDataStore();
@@ -157,11 +278,17 @@ class Utils {
             azureds.init(homeDir.getAbsolutePath());
             closer.register(asCloseable(homeDir));
             delegate = azureds;
-        } else {
+        } else if (options.has(nods)){
+            delegate = new DummyDataStore();
+            File homeDir =  Files.createTempDir();
+            delegate.init(homeDir.getAbsolutePath());
+            closer.register(asCloseable(homeDir));
+        }
+        else {
             delegate = new OakFileDataStore();
             String cfgPath = fdsConfig.value(options);
             Properties props = loadAndTransformProps(cfgPath);
-            populate(delegate, Maps.fromProperties(props), true);
+            populate(delegate, asMap(props), true);
             delegate.init(null);
         }
         DataStoreBlobStore blobStore = new DataStoreBlobStore(delegate);
@@ -224,5 +351,13 @@ class Utils {
             props.put(key, dict.get(key));
         }
         return props;
+    }
+
+    private static Map<String, ?> asMap(Properties props) {
+        Map<String, Object> map = Maps.newHashMap();
+        for (Object key : props.keySet()) {
+            map.put((String)key, props.get(key));
+        }
+        return map;
     }
 }

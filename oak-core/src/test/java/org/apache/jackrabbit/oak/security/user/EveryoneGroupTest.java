@@ -22,6 +22,7 @@ import java.util.Set;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import org.apache.jackrabbit.api.security.principal.ItemBasedPrincipal;
 import org.apache.jackrabbit.api.security.user.Authorizable;
 import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.api.security.user.UserManager;
@@ -75,6 +76,7 @@ public class EveryoneGroupTest extends AbstractSecurityTest {
     public void testGetPrincipal() throws Exception {
         assertEquals(EveryonePrincipal.getInstance(), everyoneGroup.getPrincipal());
         assertEquals(EveryonePrincipal.NAME, everyoneGroup.getPrincipal().getName());
+        assertTrue(everyoneGroup.getPrincipal() instanceof ItemBasedPrincipal);
     }
 
     @Test
@@ -148,6 +150,11 @@ public class EveryoneGroupTest extends AbstractSecurityTest {
         for (Authorizable a : authorizables) {
             assertFalse(everyoneGroup.removeMember(a));
         }
+    }
+
+    @Test
+    public void testRemoveEveryoneMembership() throws Exception {
+        assertFalse(getUserManager(root).getAuthorizable("testGroup", Group.class).removeMember(everyoneGroup));
     }
 
     @Test

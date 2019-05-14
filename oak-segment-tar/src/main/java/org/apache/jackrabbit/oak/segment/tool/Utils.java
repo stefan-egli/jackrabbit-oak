@@ -26,17 +26,20 @@ import java.io.IOException;
 import java.util.Iterator;
 import java.util.List;
 
-import javax.annotation.Nullable;
-
+import com.google.common.base.Function;
+import com.google.common.collect.Iterators;
+import org.apache.jackrabbit.oak.commons.json.JsonObject;
+import org.apache.jackrabbit.oak.commons.json.JsopTokenizer;
+import org.apache.jackrabbit.oak.segment.SegmentId;
 import org.apache.jackrabbit.oak.segment.file.InvalidFileStoreVersionException;
 import org.apache.jackrabbit.oak.segment.file.JournalEntry;
 import org.apache.jackrabbit.oak.segment.file.JournalReader;
 import org.apache.jackrabbit.oak.segment.file.ReadOnlyFileStore;
+import org.apache.jackrabbit.oak.segment.file.tar.LocalJournalFile;
 import org.apache.jackrabbit.oak.segment.file.tooling.BasicReadOnlyBlobStore;
+import org.apache.jackrabbit.oak.segment.spi.persistence.JournalFile;
 import org.apache.jackrabbit.oak.spi.blob.BlobStore;
-
-import com.google.common.base.Function;
-import com.google.common.collect.Iterators;
+import org.jetbrains.annotations.NotNull;
 
 final class Utils {
 
@@ -66,12 +69,12 @@ final class Utils {
     }
 
     static List<String> readRevisions(File store) {
-        File journal = new File(store, "journal.log");
+        JournalFile journal = new LocalJournalFile(store, "journal.log");
 
         if (journal.exists()) {
             try (JournalReader journalReader = new JournalReader(journal)) {
                 Iterator<String> revisionIterator = Iterators.transform(journalReader, new Function<JournalEntry, String>() {
-                    @Nullable
+                    @NotNull
                     @Override
                     public String apply(JournalEntry entry) {
                         return entry.getRevision();
@@ -112,6 +115,34 @@ final class Utils {
         }
 
         return false;
+    }
+
+    static Long parseSegmentInfoTimestamp(SegmentId segmentId) {
+        String segmentInfo = segmentId.getSegment().getSegmentInfo();
+
+        if (segmentInfo == null) {
+            return null;
+        }
+
+        JsopTokenizer t = new JsopTokenizer(segmentInfo, 0);
+        t.read('{');
+        JsonObject object = JsonObject.create(t);
+
+        String timestampString = object.getProperties().get("t");
+
+        if (timestampString == null) {
+            return null;
+        }
+
+        long timestamp;
+
+        try {
+            timestamp = Long.parseLong(timestampString);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+
+        return timestamp;
     }
 
 }

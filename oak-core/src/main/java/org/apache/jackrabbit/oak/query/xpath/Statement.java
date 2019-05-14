@@ -18,17 +18,22 @@ package org.apache.jackrabbit.oak.query.xpath;
 
 import java.util.ArrayList;
 
-import org.apache.jackrabbit.oak.query.QueryImpl;
 import org.apache.jackrabbit.oak.query.QueryOptions;
 import org.apache.jackrabbit.oak.query.QueryOptions.Traversal;
 import org.apache.jackrabbit.oak.query.xpath.Expression.AndCondition;
 import org.apache.jackrabbit.oak.query.xpath.Expression.OrCondition;
 import org.apache.jackrabbit.oak.query.xpath.Expression.Property;
+import org.apache.jackrabbit.oak.spi.query.QueryConstants;
 
 /**
  * An xpath statement.
  */
 public class Statement {
+    
+    private static final UnsupportedOperationException TOO_MANY_UNION = 
+            new UnsupportedOperationException("Too many union queries");
+    private final static int MAX_UNION = Integer.getInteger("oak.xpathMaxUnion", 1000);
+    private final static boolean KEEP_UNION_ORDER = Boolean.getBoolean("oak.xpath.keepUnionOrder");
 
     boolean explain;
     boolean measure;
@@ -52,17 +57,22 @@ public class Statement {
     
     String xpathQuery;
     
-    QueryOptions queryOptions = new QueryOptions();
+    QueryOptions queryOptions;
     
     public Statement optimize() {
-        ignoreOrderByScoreDesc();
+        ignoreOrderByScoreDesc(orderList);
         if (where == null) {
             return this;
         }
         where = where.optimize();
         optimizeSelectorNodeTypes();
         ArrayList<Expression> unionList = new ArrayList<Expression>();
-        addToUnionList(where, unionList);
+        try {
+            addToUnionList(where, unionList);
+        } catch (UnsupportedOperationException e) {
+            // too many union
+            return this;
+        }
         if (unionList.size() == 1) {
             return this;
         }
@@ -141,6 +151,9 @@ public class Statement {
                 return;
             }
         }
+        if (unionList.size() > MAX_UNION) {
+            throw TOO_MANY_UNION;
+        }
         unionList.add(condition);
     }
     
@@ -158,14 +171,14 @@ public class Statement {
         
         // select ...
         buff.append("select ");
-        buff.append(new Expression.Property(columnSelector, QueryImpl.JCR_PATH, false).toString());
+        buff.append(new Expression.Property(columnSelector, QueryConstants.JCR_PATH, false).toString());
         if (selectors.size() > 1) {
-            buff.append(" as ").append('[').append(QueryImpl.JCR_PATH).append(']');
+            buff.append(" as ").append('[').append(QueryConstants.JCR_PATH).append(']');
         }
         buff.append(", ");
-        buff.append(new Expression.Property(columnSelector, QueryImpl.JCR_SCORE, false).toString());
+        buff.append(new Expression.Property(columnSelector, QueryConstants.JCR_SCORE, false).toString());
         if (selectors.size() > 1) {
-            buff.append(" as ").append('[').append(QueryImpl.JCR_SCORE).append(']');
+            buff.append(" as ").append('[').append(QueryConstants.JCR_SCORE).append(']');
         }
         if (columnList.isEmpty()) {
             buff.append(", ");
@@ -214,15 +227,18 @@ public class Statement {
                 buff.append(orderList.get(i));
             }
         }
-        if (queryOptions.traversal != Traversal.DEFAULT) {
-            buff.append(" option(traversal " + queryOptions.traversal +")");
-        }
+        appendQueryOptions(buff, queryOptions);
         // leave original xpath string as a comment
         appendXPathAsComment(buff, xpathQuery);
         return buff.toString();        
     }
     
-    private void ignoreOrderByScoreDesc() {
+    /**
+     * Remove "[jcr:score] descending" from the list if this is the only element.
+     *
+     * @param orderList - the list (modified in-place)
+     */
+    private static void ignoreOrderByScoreDesc(ArrayList<Order> orderList) {
         if (orderList.size() != 1) {
             return;
         }
@@ -285,13 +301,22 @@ public class Statement {
         
         @Override
         public Statement optimize() {
+            if (!KEEP_UNION_ORDER) {
+                ignoreOrderByScoreDesc(orderList);
+            }
             Statement s1b = s1.optimize();
             Statement s2b = s2.optimize();
             if (s1 == s1b && s2 == s2b) {
                 // no change
                 return this;
             }
-            return new UnionStatement(s1b, s2b);
+            UnionStatement union = new UnionStatement(s1b, s2b);
+            union.explain = explain;
+            union.measure = measure;
+            union.orderList = orderList;
+            union.queryOptions = queryOptions;
+            union.xpathQuery = xpathQuery;
+            return union;
         }
         
         @Override
@@ -315,14 +340,43 @@ public class Statement {
                     buff.append(orderList.get(i));
                 }
             }
-            if (queryOptions.traversal != Traversal.DEFAULT) {
-                buff.append(" option(traversal " + queryOptions.traversal +")");
-            }
+            appendQueryOptions(buff, queryOptions);
             // leave original xpath string as a comment
             appendXPathAsComment(buff, xpathQuery);
             return buff.toString();
         }
         
+    }
+    
+    private static void appendQueryOptions(StringBuilder buff, QueryOptions queryOptions) {
+        if (queryOptions == null) {
+            return;
+        }
+        buff.append(" option(");
+        int optionCount = 0;
+        if (queryOptions.traversal != Traversal.DEFAULT) {
+            buff.append("traversal " + queryOptions.traversal);
+            optionCount++;
+        }
+        if (queryOptions.indexName != null) {
+            if (optionCount > 0) {
+                buff.append(", ");
+            }
+            buff.append("index name [");
+            buff.append(queryOptions.indexName);
+            buff.append("]");
+            optionCount++;
+        }
+        if (queryOptions.indexTag != null) {
+            if (optionCount > 0) {
+                buff.append(", ");
+            }
+            buff.append("index tag [");
+            buff.append(queryOptions.indexTag);
+            buff.append("]");
+            optionCount++;
+        }
+        buff.append(")");
     }
     
     private static void appendXPathAsComment(StringBuilder buff, String xpath) {

@@ -22,36 +22,37 @@ package org.apache.jackrabbit.oak.plugins.index.lucene.writer;
 import java.io.IOException;
 import java.util.Map;
 
-import javax.annotation.Nullable;
-
 import com.google.common.collect.Maps;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexCopier;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition;
-import org.apache.jackrabbit.oak.spi.blob.GarbageCollectableBlobStore;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexDefinition;
+import org.apache.jackrabbit.oak.plugins.index.lucene.directory.DirectoryFactory;
 import org.apache.jackrabbit.oak.spi.mount.Mount;
 import org.apache.jackrabbit.oak.spi.mount.MountInfoProvider;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.lucene.index.IndexableField;
 
+import static com.google.common.collect.Iterables.concat;
+import static java.util.Collections.singleton;
+import static java.util.stream.StreamSupport.stream;
+
 class MultiplexingIndexWriter implements LuceneIndexWriter {
-    private final IndexCopier indexCopier;
     private final MountInfoProvider mountInfoProvider;
-    private final IndexDefinition definition;
+    private final DirectoryFactory directoryFactory;
+    private final LuceneIndexDefinition definition;
     private final NodeBuilder definitionBuilder;
     private final boolean reindex;
-    private GarbageCollectableBlobStore blobStore;
+    private final LuceneIndexWriterConfig writerConfig;
 
     private final Map<Mount, DefaultIndexWriter> writers = Maps.newHashMap();
 
-    public MultiplexingIndexWriter(IndexCopier indexCopier, MountInfoProvider mountInfoProvider,
-                                   IndexDefinition definition, NodeBuilder definitionBuilder,
-                                   boolean reindex, @Nullable GarbageCollectableBlobStore blobStore) {
-        this.indexCopier = indexCopier;
+    public MultiplexingIndexWriter(DirectoryFactory directoryFactory, MountInfoProvider mountInfoProvider,
+                                   LuceneIndexDefinition definition, NodeBuilder definitionBuilder,
+                                   boolean reindex, LuceneIndexWriterConfig writerConfig) {
         this.mountInfoProvider = mountInfoProvider;
         this.definition = definition;
         this.definitionBuilder = definitionBuilder;
         this.reindex = reindex;
-        this.blobStore = blobStore;
+        this.directoryFactory = directoryFactory;
+        this.writerConfig = writerConfig;
     }
 
     @Override
@@ -76,6 +77,15 @@ class MultiplexingIndexWriter implements LuceneIndexWriter {
 
     @Override
     public boolean close(long timestamp) throws IOException {
+        // explicitly get writers for mounts which haven't got writers even at close.
+        // This essentially ensures we respect DefaultIndexWriters#close's intent to
+        // create empty index even if nothing has been written during re-index.
+        stream(concat(singleton(mountInfoProvider.getDefaultMount()), mountInfoProvider.getNonDefaultMounts())
+                .spliterator(), false)
+                .filter(m ->  reindex && !m.isReadOnly()) // only needed when re-indexing for read-write mounts.
+                                                         // reindex for ro-mount doesn't make sense in this case anyway.
+                .forEach(m -> getWriter(m)); // open default writers for mounts that passed all our tests
+
         boolean indexUpdated = false;
         for (LuceneIndexWriter w : writers.values()) {
             indexUpdated |= w.close(timestamp);
@@ -100,7 +110,7 @@ class MultiplexingIndexWriter implements LuceneIndexWriter {
     private DefaultIndexWriter createWriter(Mount m) {
         String dirName = MultiplexersLucene.getIndexDirName(m);
         String suggestDirName = MultiplexersLucene.getSuggestDirName(m);
-        return new DefaultIndexWriter(definition, definitionBuilder, indexCopier, dirName,
-            suggestDirName, reindex, blobStore);
+        return new DefaultIndexWriter(definition, definitionBuilder, directoryFactory, dirName,
+            suggestDirName, reindex, writerConfig);
     }
 }

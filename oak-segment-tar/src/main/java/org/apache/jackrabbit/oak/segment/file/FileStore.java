@@ -18,64 +18,26 @@
  */
 package org.apache.jackrabbit.oak.segment.file;
 
-import static com.google.common.collect.Lists.newArrayList;
-import static com.google.common.collect.Lists.newArrayListWithCapacity;
-import static com.google.common.collect.Lists.newLinkedList;
-import static com.google.common.collect.Maps.newLinkedHashMap;
-import static com.google.common.collect.Sets.newHashSet;
-import static java.lang.Integer.getInteger;
 import static java.lang.String.format;
-import static java.lang.System.currentTimeMillis;
-import static java.lang.Thread.currentThread;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.jackrabbit.oak.commons.IOUtils.humanReadableByteCount;
 import static org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState.EMPTY_NODE;
-import static org.apache.jackrabbit.oak.segment.SegmentWriterBuilder.segmentWriterBuilder;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.CLEANUP;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.COMPACTION;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.COMPACTION_FORCE_COMPACT;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.COMPACTION_RETRY;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.ESTIMATION;
-import static org.apache.jackrabbit.oak.segment.compaction.SegmentGCStatus.IDLE;
-import static org.apache.jackrabbit.oak.segment.file.TarRevisions.EXPEDITE_OPTION;
-import static org.apache.jackrabbit.oak.segment.file.TarRevisions.timeout;
+import static org.apache.jackrabbit.oak.segment.DefaultSegmentWriterBuilder.defaultSegmentWriterBuilder;
+import static org.apache.jackrabbit.oak.segment.file.PrintableBytes.newPrintableBytes;
+import static org.apache.jackrabbit.oak.stats.StatsOptions.DEFAULT;
+import static org.apache.jackrabbit.oak.stats.StatsOptions.METRICS_ONLY;
 
-import java.io.File;
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileLock;
-import java.nio.channels.OverlappingFileLockException;
-import java.util.Arrays;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
-import com.google.common.base.Function;
-import com.google.common.base.Joiner;
-import com.google.common.base.Predicate;
-import com.google.common.base.Stopwatch;
 import com.google.common.base.Supplier;
-import com.google.common.base.Suppliers;
-import com.google.common.collect.ImmutableList;
 import com.google.common.io.Closer;
-import org.apache.jackrabbit.oak.plugins.blob.ReferenceCollector;
-import org.apache.jackrabbit.oak.segment.Compactor;
+import com.google.common.util.concurrent.UncheckedExecutionException;
 import org.apache.jackrabbit.oak.segment.RecordId;
 import org.apache.jackrabbit.oak.segment.Segment;
 import org.apache.jackrabbit.oak.segment.SegmentId;
@@ -83,11 +45,20 @@ import org.apache.jackrabbit.oak.segment.SegmentNodeState;
 import org.apache.jackrabbit.oak.segment.SegmentNotFoundException;
 import org.apache.jackrabbit.oak.segment.SegmentNotFoundExceptionListener;
 import org.apache.jackrabbit.oak.segment.SegmentWriter;
-import org.apache.jackrabbit.oak.segment.WriterCacheManager;
 import org.apache.jackrabbit.oak.segment.compaction.SegmentGCOptions;
-import org.apache.jackrabbit.oak.segment.file.GCJournal.GCJournalEntry;
+import org.apache.jackrabbit.oak.segment.file.ShutDown.ShutDownCloser;
+import org.apache.jackrabbit.oak.segment.file.cancel.Canceller;
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
+import org.apache.jackrabbit.oak.segment.file.tar.TarFiles;
+import org.apache.jackrabbit.oak.segment.spi.persistence.RepositoryLock;
+import org.apache.jackrabbit.oak.segment.spi.persistence.SegmentNodeStorePersistence;
+import org.apache.jackrabbit.oak.segment.spi.persistence.Buffer;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
-import org.apache.jackrabbit.oak.spi.state.NodeState;
+import org.apache.jackrabbit.oak.stats.CounterStats;
+import org.apache.jackrabbit.oak.stats.StatisticsProvider;
+import org.apache.jackrabbit.oak.stats.TimerStats;
+import org.apache.jackrabbit.oak.stats.TimerStats.Context;
+import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,40 +67,38 @@ import org.slf4j.LoggerFactory;
  */
 public class FileStore extends AbstractFileStore {
     private static final Logger log = LoggerFactory.getLogger(FileStore.class);
-
-    /**
-     * Minimal interval in milli seconds between subsequent garbage collection cycles.
-     * Garbage collection invoked via {@link #gc()} will be skipped unless at least
-     * the specified time has passed since its last successful invocation.
-     */
-    private static final long GC_BACKOFF = getInteger("oak.gc.backoff", 10*3600*1000);
-
     private static final int MB = 1024 * 1024;
 
-    static final String LOCK_FILE_NAME = "repo.lock";
+    /**
+     * Name of the {@link CounterStats counter} exposing the number of {@code TarReader}
+     * instances in use by {@link TarFiles}.
+     */
+    private static final String TAR_READER_COUNT = "TAR_READER_COUNT";
 
     /**
-     * GC counter for logging purposes
+     * Name of the {@link CounterStats counter} exposing the number of segments.
      */
-    private static final AtomicLong GC_COUNT = new AtomicLong(0);
+    private static final String SEGMENT_COUNT = "SEGMENT_COUNT";
 
-    @Nonnull
+
+    private static GarbageCollectionStrategy newGarbageCollectionStrategy() {
+        if (Boolean.getBoolean("gc.classic")) {
+            return new SynchronizedGarbageCollectionStrategy(new DefaultGarbageCollectionStrategy());
+        }
+        return new SynchronizedGarbageCollectionStrategy(new CleanupFirstGarbageCollectionStrategy());
+    }
+
+    @NotNull
     private final SegmentWriter segmentWriter;
 
-    private final int maxFileSize;
-
-    @Nonnull
+    @NotNull
     private final GarbageCollector garbageCollector;
 
-    private volatile List<TarReader> readers;
+    private final TarFiles tarFiles;
 
-    private volatile TarWriter tarWriter;
+    private final RepositoryLock repositoryLock;
 
-    private final RandomAccessFile lockFile;
-
-    private final FileLock lock;
-
-    private TarRevisions revisions;
+    private volatile TarRevisions revisions;
 
     /**
      * Scheduler for running <em>short</em> background operations
@@ -141,7 +110,7 @@ public class FileStore extends AbstractFileStore {
      * not be removed immediately, because they first need to be closed, and the
      * JVM needs to release the memory mapped file references.
      */
-    private final FileReaper fileReaper = new FileReaper();
+    private final FileReaper fileReaper;
 
     /**
      * This flag is periodically updated by calling the {@code SegmentGCOptions}
@@ -155,128 +124,134 @@ public class FileStore extends AbstractFileStore {
      */
     private final AtomicBoolean sufficientMemory = new AtomicBoolean(true);
 
-    /**
-     * Flag signalling shutdown of the file store
-     */
-    private volatile boolean shutdown;
-
-    private final ReadWriteLock fileStoreLock = new ReentrantReadWriteLock();
-
     private final FileStoreStats stats;
 
-    @Nonnull
+    private final ShutDown shutDown = new ShutDown();
+
+    @NotNull
     private final SegmentNotFoundExceptionListener snfeListener;
+
+    private final GarbageCollectionStrategy garbageCollectionStrategy = newGarbageCollectionStrategy();
+
+    private final boolean eagerSegmentCaching;
 
     FileStore(final FileStoreBuilder builder) throws InvalidFileStoreVersionException, IOException {
         super(builder);
 
-        lockFile = new RandomAccessFile(new File(directory, LOCK_FILE_NAME), "rw");
-        try {
-            lock = lockFile.getChannel().lock();
-        } catch (OverlappingFileLockException ex) {
-            throw new IllegalStateException(directory.getAbsolutePath()
-                    + " is in use by another store.", ex);
-        }
+        SegmentNodeStorePersistence persistence = builder.getPersistence();
+        repositoryLock = persistence.lockRepository();
+        StatisticsProvider statsProvider = builder.getStatsProvider();
 
-        this.segmentWriter = segmentWriterBuilder("sys")
-                .withGeneration(new Supplier<Integer>() {
-                    @Override
-                    public Integer get() {
-                        return getGcGeneration();
-                    }
-                })
+        this.segmentWriter = defaultSegmentWriterBuilder("sys")
+                .withGeneration(() -> getGcGeneration().nonGC())
                 .withWriterPool()
-                .with(builder.getCacheManager())
+                .with(builder.getCacheManager()
+                        .withAccessTracking("WRITE", statsProvider))
                 .build(this);
-        this.maxFileSize = builder.getMaxFileSize() * MB;
+
+        newManifestChecker(persistence, builder.getStrictVersionCheck()).checkAndUpdateManifest();
+
+        this.stats = new FileStoreStats(statsProvider, this, 0);
+
+        CounterStats readerCountStats = statsProvider.getCounterStats(TAR_READER_COUNT, DEFAULT);
+        CounterStats segmentCountStats = statsProvider.getCounterStats(SEGMENT_COUNT, DEFAULT);
+        TarFiles.Builder tarFilesBuilder = TarFiles.builder()
+                .withDirectory(directory)
+                .withMemoryMapping(memoryMapping)
+                .withTarRecovery(recovery)
+                .withIOMonitor(ioMonitor)
+                .withFileStoreMonitor(stats)
+                .withMaxFileSize(builder.getMaxFileSize() * MB)
+                .withPersistence(builder.getPersistence())
+                .withReaderCountStats(readerCountStats)
+                .withSegmentCountStats(segmentCountStats);
+
+        this.tarFiles = tarFilesBuilder.build();
+        long size = this.tarFiles.size();
+        this.stats.init(size);
+
+        this.fileReaper = this.tarFiles.createFileReaper();
+
         this.garbageCollector = new GarbageCollector(
-                builder.getGcOptions(), builder.getGcListener(), new GCJournal(directory), builder.getCacheManager());
+            builder.getGcOptions(),
+            builder.getGcListener(),
+            new GCJournal(persistence.getGCJournalFile()),
+            sufficientMemory,
+            fileReaper,
+            tarFiles,
+            tracker,
+            segmentReader,
+            () -> revisions,
+            getBlobStore(),
+            segmentCache,
+            segmentWriter,
+            stats,
+            Canceller.newCanceller()
+                .withCondition("not enough disk space", () -> !sufficientDiskSpace.get())
+                .withCondition("not enough memory", () -> !sufficientMemory.get())
+                .withCondition("FileStore is shutting down", shutDown::isShutDown),
+            this::flush,
+            generation ->
+                defaultSegmentWriterBuilder("c")
+                    .with(builder.getCacheManager().withAccessTracking("COMPACT", statsProvider))
+                    .withGeneration(generation)
+                    .withoutWriterPool()
+                    .build(this)
+        );
 
-        Map<Integer, Map<Character, File>> map = collectFiles(directory);
-
-        Manifest manifest = Manifest.empty();
-
-        if (!map.isEmpty()) {
-            manifest = checkManifest(openManifest());
-        }
-
-        saveManifest(manifest);
-
-        this.readers = newArrayListWithCapacity(map.size());
-        Integer[] indices = map.keySet().toArray(new Integer[map.size()]);
-        Arrays.sort(indices);
-        for (int i = indices.length - 1; i >= 0; i--) {
-            readers.add(TarReader.open(map.get(indices[i]), memoryMapping, recovery, ioMonitor));
-        }
-        this.stats = new FileStoreStats(builder.getStatsProvider(), this, size());
-
-        int writeNumber = 0;
-        if (indices.length > 0) {
-            writeNumber = indices[indices.length - 1] + 1;
-        }
-        this.tarWriter = new TarWriter(directory, stats, writeNumber, ioMonitor);
-        
         this.snfeListener = builder.getSnfeListener();
+        this.eagerSegmentCaching = builder.getEagerSegmentCaching();
 
-        fileStoreScheduler.scheduleAtFixedRate(
-                format("TarMK flush [%s]", directory), 5, SECONDS,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        if (shutdown) {
-                            return;
-                        }
-                        try {
-                            flush();
-                        } catch (IOException e) {
-                            log.warn("Failed to flush the TarMK at {}",
-                                    directory, e);
-                        }
-                    }
-                });
-        fileStoreScheduler.scheduleAtFixedRate(
-                format("TarMK filer reaper [%s]", directory), 5, SECONDS,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        fileReaper.reap();
-                    }
-                });
-        fileStoreScheduler.scheduleAtFixedRate(
-                format("TarMK disk space check [%s]", directory), 1, MINUTES,
-                new Runnable() {
-                    final SegmentGCOptions gcOptions = builder.getGcOptions();
+        TimerStats flushTimer = statsProvider.getTimer("oak.segment.flush", METRICS_ONLY);
+        fileStoreScheduler.scheduleWithFixedDelay(format("TarMK flush [%s]", directory), 5, SECONDS, () -> {
+            Context timer = flushTimer.time();
+            try {
+                tryFlush();
+            } finally {
+                timer.stop();
+            }
+        });
 
-                    @Override
-                    public void run() {
-                        checkDiskSpace(gcOptions);
-                    }
-                });
-        log.info("TarMK opened: {} (mmap={})", directory, memoryMapping);
-        log.debug("TarMK readers {}", this.readers);
+        fileStoreScheduler.scheduleWithFixedDelay(format("TarMK filer reaper [%s]", directory), 5, SECONDS,
+                                                  fileReaper::reap);
+
+        fileStoreScheduler.scheduleWithFixedDelay(format("TarMK disk space check [%s]", directory), 1, MINUTES, () -> {
+           try (ShutDownCloser ignore = shutDown.tryKeepAlive()) {
+               if (shutDown.isShutDown()) {
+                   log.debug("Shut down in progress, skipping disk space check");
+               } else {
+                   checkDiskSpace(builder.getGcOptions());
+               }
+           }
+        });
+
+        log.info("TarMK opened at {}, mmap={}, offHeapAccess={}, size={}",
+            directory,
+            memoryMapping,
+            offHeapAccess,
+            newPrintableBytes(size)
+        );
+        log.debug("TAR files: {}", tarFiles);
     }
 
     FileStore bind(TarRevisions revisions) throws IOException {
-        this.revisions = revisions;
-        this.revisions.bind(this, tracker, initialNode());
-        return this;
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            this.revisions = revisions;
+            this.revisions.bind(this, tracker, initialNode());
+            return this;
+        }
     }
 
-    private void saveManifest(Manifest manifest) throws IOException {
-        manifest.setStoreVersion(CURRENT_STORE_VERSION);
-        manifest.save(getManifestFile());
-    }
-
-    @Nonnull
+    @NotNull
     private Supplier<RecordId> initialNode() {
         return new Supplier<RecordId>() {
             @Override
             public RecordId get() {
                 try {
-                    SegmentWriter writer = segmentWriterBuilder("init").build(FileStore.this);
+                    SegmentWriter writer = defaultSegmentWriterBuilder("init").build(FileStore.this);
                     NodeBuilder builder = EMPTY_NODE.builder();
                     builder.setChildNode("root", EMPTY_NODE);
-                    SegmentNodeState node = writer.writeNode(builder.getNodeState());
+                    SegmentNodeState node = new SegmentNodeState(segmentReader, writer, getBlobStore(), writer.writeNode(builder.getNodeState()));
                     writer.flush();
                     return node.getRecordId();
                 } catch (IOException e) {
@@ -288,7 +263,8 @@ public class FileStore extends AbstractFileStore {
         };
     }
 
-    private int getGcGeneration() {
+    @NotNull
+    private GCGeneration getGcGeneration() {
         return revisions.getHead().getSegmentId().getGcGeneration();
     }
 
@@ -296,48 +272,43 @@ public class FileStore extends AbstractFileStore {
      * @return  a runnable for running garbage collection
      */
     public Runnable getGCRunner() {
-        return new SafeRunnable(format("TarMK revision gc [%s]", directory), new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    gc();
-                } catch (IOException e) {
-                    log.error("Error running revision garbage collection", e);
-                }
+        return new SafeRunnable(format("TarMK revision gc [%s]", directory), () -> {
+            try (ShutDownCloser ignored = shutDown.keepAlive()) {
+                garbageCollector.run(garbageCollectionStrategy);
+            } catch (IOException e) {
+                log.error("Error running revision garbage collection", e);
             }
         });
     }
 
     /**
-     * @return the size of this store. This method shouldn't be called from
-     * a very tight loop as it contents with the {@link #fileStoreLock}.
+     * @return the currently active gc write monitor
      */
-    private long size() {
-        List<TarReader> readersSnapshot;
-        long writeFileSnapshotSize;
-
-        fileStoreLock.readLock().lock();
-        try {
-            readersSnapshot = ImmutableList.copyOf(readers);
-            writeFileSnapshotSize = tarWriter != null ? tarWriter.fileLength() : 0;
-        } finally {
-            fileStoreLock.readLock().unlock();
-        }
-
-        long size = writeFileSnapshotSize;
-        for (TarReader reader : readersSnapshot) {
-            size += reader.size();
-        }
-
-        return size;
+    public GCNodeWriteMonitor getGCNodeWriteMonitor() {
+        return garbageCollector.getGCNodeWriteMonitor();
     }
 
-    public int readerCount(){
-        fileStoreLock.readLock().lock();
-        try {
-            return readers.size();
-        } finally {
-            fileStoreLock.readLock().unlock();
+    /**
+     * @return the size of this store.
+     */
+    private long size() {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return tarFiles.size();
+        }
+    }
+
+    public int readerCount() {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return tarFiles.readerCount();
+        }
+    }
+
+    /**
+     * @return  the number of segments in the segment store
+     */
+    public int getSegmentCount() {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return tarFiles.segmentCount();
         }
     }
 
@@ -345,36 +316,68 @@ public class FileStore extends AbstractFileStore {
         return stats;
     }
 
-    public void flush() throws IOException {
+    /*
+     * Callers of this method must hold the shutdown lock
+     */
+    private void doFlush() throws IOException {
         if (revisions == null) {
+            log.debug("No TarRevisions available, skipping flush");
             return;
         }
-        revisions.flush(new Callable<Void>() {
-            @Override
-            public Void call() throws Exception {
-                segmentWriter.flush();
-                tarWriter.flush();
-                stats.flushed();
-
-                return null;
-            }
+        revisions.flush(() -> {
+            segmentWriter.flush();
+            tarFiles.flush();
+            stats.flushed();
         });
     }
 
     /**
-     * Run garbage collection: estimation, compaction, cleanup
-     * @throws IOException
+     * Flush all pending changes
      */
-    public void gc() throws IOException {
-        garbageCollector.run();
+    public void flush() throws IOException {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            doFlush();
+        }
     }
 
     /**
-     * Run the compaction gain estimation process.
-     * @return
+     * Try to flush all pending changes to disk if possible without waiting
+     * for a lock or other resources currently not available.
      */
-    public GCEstimation estimateCompactionGain() {
-        return garbageCollector.estimateCompactionGain(Suppliers.ofInstance(false));
+    public void tryFlush() {
+        try (ShutDownCloser ignore = shutDown.tryKeepAlive()) {
+            if (shutDown.isShutDown()) {
+                log.debug("Shut down in progress, skipping flush");
+            } else if (revisions == null) {
+                log.debug("No TarRevisions available, skipping flush");
+            } else {
+                revisions.tryFlush(() -> {
+                    segmentWriter.flush();
+                    tarFiles.flush();
+                    stats.flushed();
+                });
+            }
+        } catch (IOException e) {
+            log.warn("Failed to flush the TarMK at {}", directory, e);
+        }
+    }
+
+    /**
+     * Run full garbage collection: estimation, compaction, cleanup.
+     */
+    public void fullGC() throws IOException {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            garbageCollector.runFull(garbageCollectionStrategy);
+        }
+    }
+
+    /**
+     * Run tail garbage collection.
+     */
+    public void tailGC() throws IOException {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            garbageCollector.runTail(garbageCollectionStrategy);
+        }
     }
 
     /**
@@ -383,8 +386,22 @@ public class FileStore extends AbstractFileStore {
      * reference to them).
      * @return {@code true} on success, {@code false} otherwise.
      */
-    public boolean compact() {
-        return garbageCollector.compact().isSuccess();
+    public boolean compactFull() {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return garbageCollector.compactFull(garbageCollectionStrategy).isSuccess();
+        } catch (IOException e) {
+            log.warn("Unable to perform full compaction", e);
+            return false;
+        }
+    }
+
+    public boolean compactTail() {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return garbageCollector.compactTail(garbageCollectionStrategy).isSuccess();
+        } catch (IOException e) {
+            log.warn("Unable to perform tail compaction");
+            return false;
+        }
     }
 
     /**
@@ -395,9 +412,9 @@ public class FileStore extends AbstractFileStore {
      * skipping the reclaimed segments.
      */
     public void cleanup() throws IOException {
-        CompactionResult compactionResult = CompactionResult.skipped(
-                getGcGeneration(), garbageCollector.gcOptions);
-        fileReaper.add(garbageCollector.cleanup(compactionResult));
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            fileReaper.add(garbageCollector.cleanup(garbageCollectionStrategy));
+        }
     }
 
     /**
@@ -412,8 +429,11 @@ public class FileStore extends AbstractFileStore {
      * running.
      * @param collector  reference collector called back for each blob reference found
      */
-    public void collectBlobReferences(ReferenceCollector collector) throws IOException {
-        garbageCollector.collectBlobReferences(collector);
+    @Override
+    public void collectBlobReferences(Consumer<String> collector) throws IOException {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            garbageCollector.collectBlobReferences(collector);
+        }
     }
 
     /**
@@ -425,217 +445,118 @@ public class FileStore extends AbstractFileStore {
     }
 
     @Override
-    @Nonnull
+    @NotNull
     public SegmentWriter getWriter() {
-        return segmentWriter;
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return segmentWriter;
+        }
     }
 
     @Override
-    @Nonnull
+    @NotNull
     public TarRevisions getRevisions() {
-        return revisions;
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return revisions;
+        }
     }
 
     @Override
     public void close() {
-        // Flag the store as shutting / shut down
-        shutdown = true;
+        try (ShutDownCloser ignored = shutDown.shutDown()) {
+            // avoid deadlocks by closing (and joining) the background
+            // thread before acquiring the synchronization lock
+            fileStoreScheduler.close();
 
-        // avoid deadlocks by closing (and joining) the background
-        // thread before acquiring the synchronization lock
-        fileStoreScheduler.close();
-
-        try {
-            flush();
-        } catch (IOException e) {
-            log.warn("Unable to flush the store", e);
-        }
-
-        Closer closer = Closer.create();
-        closer.register(revisions);
-        fileStoreLock.writeLock().lock();
-        try {
-            if (lock != null) {
-                try {
-                    lock.release();
-                } catch (IOException e) {
-                    log.warn("Unable to release the file lock", e);
-                }
-            }
-            closer.register(lockFile);
-
-            List<TarReader> list = readers;
-            readers = newArrayList();
-            for (TarReader reader : list) {
-                closer.register(reader);
+            try {
+                doFlush();
+            } catch (IOException e) {
+                log.warn("Unable to flush the store", e);
             }
 
-            closer.register(tarWriter);
-        } finally {
-            fileStoreLock.writeLock().unlock();
+            Closer closer = Closer.create();
+            closer.register(repositoryLock::unlock);
+            closer.register(tarFiles) ;
+            closer.register(revisions);
+
+            closeAndLogOnFail(closer);
         }
-        closeAndLogOnFail(closer);
 
         // Try removing pending files in case the scheduler didn't have a chance to run yet
-        fileReaper.reap();
         System.gc(); // for any memory-mappings that are no longer used
+        fileReaper.reap();
 
         log.info("TarMK closed: {}", directory);
     }
 
     @Override
     public boolean containsSegment(SegmentId id) {
-        if (FileStoreUtil.containSegment(readers, id)) {
-            return true;
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return tarFiles.containsSegment(id.getMostSignificantBits(), id.getLeastSignificantBits());
         }
-
-        if (tarWriter != null) {
-            fileStoreLock.readLock().lock();
-            try {
-                if (tarWriter.containsEntry(id.getMostSignificantBits(), id.getLeastSignificantBits())) {
-                    return true;
-                }
-            } finally {
-                fileStoreLock.readLock().unlock();
-            }
-        }
-
-        // the writer might have switched to a new file,
-        // so we need to re-check the readers
-        return FileStoreUtil.containSegment(readers, id);
     }
 
     @Override
-    @Nonnull
+    @NotNull
     public Segment readSegment(final SegmentId id) {
-        try {
-            return segmentCache.getSegment(id, new Callable<Segment>() {
-                @Override
-                public Segment call() throws Exception {
-                    ByteBuffer buffer = FileStoreUtil.readEntry(readers, id);
-                    if (buffer != null) {
-                        return new Segment(tracker, segmentReader, id, buffer);
-                    }
-
-                    if (tarWriter != null) {
-                        fileStoreLock.readLock().lock();
-                        try {
-                            try {
-                                buffer = tarWriter.readEntry(id.getMostSignificantBits(), id.getLeastSignificantBits());
-                                if (buffer != null) {
-                                    return new Segment(tracker, segmentReader, id, buffer);
-                                }
-                            } catch (IOException e) {
-                                log.warn("Failed to read from tar file {}", tarWriter, e);
-                            }
-                        } finally {
-                            fileStoreLock.readLock().unlock();
-                        }
-                    }
-
-                    // The TarWriter might have become a TarReader in the
-                    // meantime. Moreover, the TarWriter that became a TarReader
-                    // might have additional entries. Because of this, we need
-                    // to check the list of TarReaders once more.
-
-                    buffer = FileStoreUtil.readEntry(readers, id);
-                    if (buffer != null) {
-                        return new Segment(tracker, segmentReader, id, buffer);
-                    }
-
-                    throw new SegmentNotFoundException(id);
-                }
-            });
-        } catch (ExecutionException e) {
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            return segmentCache.getSegment(id, () -> readSegmentUncached(tarFiles, id));
+        } catch (ExecutionException | UncheckedExecutionException e) {
             SegmentNotFoundException snfe = asSegmentNotFoundException(e, id);
             snfeListener.notify(id, snfe);
+            stats.notify(id, snfe);
             throw snfe;
         }
     }
 
-    private static SegmentNotFoundException asSegmentNotFoundException(ExecutionException e, SegmentId id) {
-        if (e.getCause() instanceof SegmentNotFoundException) {
-            return (SegmentNotFoundException) e.getCause();
-        }
-        return new SegmentNotFoundException(id, e);
-    }
-
     @Override
     public void writeSegment(SegmentId id, byte[] buffer, int offset, int length) throws IOException {
-        Segment segment = null;
+        try (ShutDownCloser ignored = shutDown.keepAlive()) {
+            Segment segment = null;
 
-        // If the segment is a data segment, create a new instance of Segment to
-        // access some internal information stored in the segment and to store
-        // in an in-memory cache for later use.
+            // If the segment is a data segment, create a new instance of Segment to
+            // access some internal information stored in the segment and to store
+            // in an in-memory cache for later use.
 
-        int generation = 0;
-        if (id.isDataSegmentId()) {
-            ByteBuffer data;
+            GCGeneration generation = GCGeneration.NULL;
+            Set<UUID> references = null;
+            Set<String> binaryReferences = null;
 
-            if (offset > 4096) {
-                data = ByteBuffer.allocate(length);
-                data.put(buffer, offset, length);
-                data.rewind();
-            } else {
-                data = ByteBuffer.wrap(buffer, offset, length);
+            if (id.isDataSegmentId()) {
+                Buffer data;
+
+                if (offset > 4096) {
+                    data = Buffer.allocate(length);
+                    data.put(buffer, offset, length);
+                    data.rewind();
+                } else {
+                    data = Buffer.wrap(buffer, offset, length);
+                }
+
+                segment = new Segment(tracker, segmentReader, id, data);
+
+                if (eagerSegmentCaching) {
+                    segmentCache.putSegment(segment);
+                }
+
+                generation = segment.getGcGeneration();
+                references = readReferences(segment);
+                binaryReferences = readBinaryReferences(segment);
             }
 
-            segment = new Segment(tracker, segmentReader, id, data);
-            generation = segment.getGcGeneration();
-        }
-
-        fileStoreLock.writeLock().lock();
-        try {
-            // Flush the segment to disk
-
-            long size = tarWriter.writeEntry(
-                    id.getMostSignificantBits(),
-                    id.getLeastSignificantBits(),
-                    buffer,
-                    offset,
-                    length,
-                    generation
+            tarFiles.writeSegment(
+                id.asUUID(),
+                buffer,
+                offset,
+                length,
+                generation,
+                references,
+                binaryReferences
             );
 
-            // If the segment is a data segment, update the graph before
-            // (potentially) flushing the TAR file.
-
-            if (segment != null) {
-                populateTarGraph(segment, tarWriter);
-                populateTarBinaryReferences(segment, tarWriter);
+            // Keep this data segment in memory as it's likely to be accessed soon.
+            if (!eagerSegmentCaching && segment != null) {
+                segmentCache.putSegment(segment);
             }
-
-            // Close the TAR file if the size exceeds the maximum.
-
-            if (size >= maxFileSize) {
-                newWriter();
-            }
-        } finally {
-            fileStoreLock.writeLock().unlock();
-        }
-
-        // Keep this data segment in memory as it's likely to be accessed soon.
-
-        if (segment != null) {
-            segmentCache.putSegment(segment);
-        }
-    }
-
-    /**
-     * Switch to a new tar writer.
-     * This method may only be called when holding the write lock of {@link #fileStoreLock}
-     * @throws IOException
-     */
-    private void newWriter() throws IOException {
-        TarWriter newWriter = tarWriter.createNextGeneration();
-        if (newWriter != tarWriter) {
-            File writeFile = tarWriter.getFile();
-            List<TarReader> list =
-                    newArrayListWithCapacity(1 + readers.size());
-            list.add(TarReader.open(writeFile, memoryMapping, ioMonitor));
-            list.addAll(readers);
-            readers = list;
-            tarWriter = newWriter;
         }
     }
 
@@ -655,651 +576,6 @@ public class FileStore extends AbstractFileStore {
             log.info("Available disk space ({}) is sufficient again for repository operations, current repository size is approx. {}",
                     humanReadableByteCount(availableDiskSpace),
                     humanReadableByteCount(repositoryDiskSpace));
-        }
-    }
-
-    private class GarbageCollector {
-        @Nonnull
-        private final SegmentGCOptions gcOptions;
-
-        /**
-         * {@code GcListener} listening to this instance's gc progress
-         */
-        @Nonnull
-        private final GCListener gcListener;
-
-        @Nonnull
-        private final GCJournal gcJournal;
-
-        @Nonnull
-        private final WriterCacheManager cacheManager;
-
-        @Nonnull
-        private final GCNodeWriteMonitor compactionMonitor;
-
-        private volatile boolean cancelled;
-
-        /** Timestamp of the last time {@link #gc()} was successfully invoked. 0 if never. */
-        private long lastSuccessfullGC;
-
-        GarbageCollector(
-                @Nonnull SegmentGCOptions gcOptions,
-                @Nonnull GCListener gcListener,
-                @Nonnull GCJournal gcJournal,
-                @Nonnull WriterCacheManager cacheManager) {
-            this.gcOptions = gcOptions;
-            this.gcListener = gcListener;
-            this.gcJournal = gcJournal;
-            this.cacheManager = cacheManager;
-            this.compactionMonitor = gcOptions.getGCNodeWriteMonitor();
-        }
-
-        synchronized void run() throws IOException {
-            try {
-                gcListener.info("TarMK GC #{}: started", GC_COUNT.incrementAndGet());
-
-                long dt = System.currentTimeMillis() - lastSuccessfullGC;
-                if (dt < GC_BACKOFF) {
-                    gcListener.skipped("TarMK GC #{}: skipping garbage collection as it already ran " +
-                            "less than {} hours ago ({} s).", GC_COUNT, GC_BACKOFF/3600000, dt/1000);
-                    return;
-                }
-
-                GCMemoryBarrier gcMemoryBarrier = new GCMemoryBarrier(
-                        sufficientMemory, gcListener, GC_COUNT.get(), gcOptions);
-    
-                boolean sufficientEstimatedGain = true;
-                if (gcOptions.isEstimationDisabled()) {
-                    gcListener.info("TarMK GC #{}: estimation skipped because it was explicitly disabled", GC_COUNT);
-                } else if (gcOptions.isPaused()) {
-                    gcListener.info("TarMK GC #{}: estimation skipped because compaction is paused", GC_COUNT);
-                } else {
-                    gcListener.info("TarMK GC #{}: estimation started", GC_COUNT);
-                    gcListener.updateStatus(ESTIMATION.message());
-                    
-                    Stopwatch watch = Stopwatch.createStarted();
-                    Supplier<Boolean> cancel = new CancelCompactionSupplier(FileStore.this);
-                    GCEstimation estimate = estimateCompactionGain(cancel);
-                    if (cancel.get()) {
-                        gcListener.warn("TarMK GC #{}: estimation interrupted: {}. Skipping garbage collection.", GC_COUNT, cancel);
-                        gcMemoryBarrier.close();
-                        return;
-                    }
-    
-                    sufficientEstimatedGain = estimate.gcNeeded();
-                    String gcLog = estimate.gcLog();
-                    if (sufficientEstimatedGain) {
-                        gcListener.info(
-                                "TarMK GC #{}: estimation completed in {} ({} ms). {}",
-                                GC_COUNT, watch, watch.elapsed(MILLISECONDS), gcLog);
-                    } else {
-                        gcListener.skipped(
-                                "TarMK GC #{}: estimation completed in {} ({} ms). {}",
-                                GC_COUNT, watch, watch.elapsed(MILLISECONDS), gcLog);
-                    }
-                }
-    
-                if (sufficientEstimatedGain) {
-                    if (!gcOptions.isPaused()) {
-                        CompactionResult compactionResult = compact();
-                        if (compactionResult.isSuccess()) {
-                            lastSuccessfullGC = System.currentTimeMillis();
-                        } else {
-                            gcListener.info("TarMK GC #{}: cleaning up after failed compaction", GC_COUNT);
-                        }
-                        fileReaper.add(cleanup(compactionResult));
-                    } else {
-                        gcListener.skipped("TarMK GC #{}: compaction paused", GC_COUNT);
-                    }
-                }
-                gcMemoryBarrier.close();
-            } finally {
-                compactionMonitor.finished();
-                gcListener.updateStatus(IDLE.message());
-            }
-        }
-
-        /**
-         * Estimated compaction gain. The result will be undefined if stopped through
-         * the passed {@code stop} signal.
-         * @param stop  signal for stopping the estimation process.
-         * @return compaction gain estimate
-         */
-        synchronized GCEstimation estimateCompactionGain(Supplier<Boolean> stop) {
-            return new SizeDeltaGcEstimation(gcOptions, gcJournal,
-                    stats.getApproximateSize());
-        }
-
-        @Nonnull
-        private CompactionResult compactionAborted(int generation) {
-            gcListener.compactionFailed(generation);
-            return CompactionResult.aborted(getGcGeneration(), generation);
-        }
-
-        @Nonnull
-        private CompactionResult compactionSucceeded(int generation, @Nonnull RecordId compactedRootId) {
-            gcListener.compactionSucceeded(generation);
-            return CompactionResult.succeeded(generation, gcOptions, compactedRootId);
-        }
-
-        @Nonnull
-        synchronized CompactionResult compact() {
-            final int newGeneration = getGcGeneration() + 1;
-            try {
-                Stopwatch watch = Stopwatch.createStarted();
-                gcListener.info("TarMK GC #{}: compaction started, gc options={}", GC_COUNT, gcOptions);
-                gcListener.updateStatus(COMPACTION.message());
-
-                GCJournalEntry gcEntry = gcJournal.read();
-                long initialSize = size();
-                compactionMonitor.init(GC_COUNT.get(), gcEntry.getRepoSize(), gcEntry.getNodes(), initialSize);
-
-                SegmentNodeState before = getHead();
-                CancelCompactionSupplier cancel = new CancelCompactionSupplier(FileStore.this);
-                SegmentWriter writer = segmentWriterBuilder("c")
-                        .with(cacheManager)
-                        .withGeneration(newGeneration)
-                        .withoutWriterPool()
-                        .build(FileStore.this);
-                writer.setCompactionMonitor(compactionMonitor);
-
-                SegmentNodeState after = compact(before, writer, cancel);
-                if (after == null) {
-                    gcListener.warn("TarMK GC #{}: compaction cancelled: {}.", GC_COUNT, cancel);
-                    return compactionAborted(newGeneration);
-                }
-
-                gcListener.info("TarMK GC #{}: compaction cycle 0 completed in {} ({} ms). Compacted {} to {}",
-                        GC_COUNT, watch, watch.elapsed(MILLISECONDS), before.getRecordId(), after.getRecordId());
-
-                int cycles = 0;
-                boolean success = false;
-                while (cycles < gcOptions.getRetryCount() &&
-                        !(success = revisions.setHead(before.getRecordId(), after.getRecordId(), EXPEDITE_OPTION))) {
-                    // Some other concurrent changes have been made.
-                    // Rebase (and compact) those changes on top of the
-                    // compacted state before retrying to set the head.
-                    cycles++;
-                    gcListener.info("TarMK GC #{}: compaction detected concurrent commits while compacting. " +
-                                    "Compacting these commits. Cycle {} of {}",
-                            GC_COUNT, cycles, gcOptions.getRetryCount());
-                    gcListener.updateStatus(COMPACTION_RETRY.message() + cycles);
-                    Stopwatch cycleWatch = Stopwatch.createStarted();
-                    
-                    SegmentNodeState head = getHead();
-                    after = compact(head, writer, cancel);
-                    if (after == null) {
-                        gcListener.warn("TarMK GC #{}: compaction cancelled: {}.", GC_COUNT, cancel);
-                        return compactionAborted(newGeneration);
-                    }
-
-                    gcListener.info("TarMK GC #{}: compaction cycle {} completed in {} ({} ms). Compacted {} against {} to {}",
-                            GC_COUNT, cycles, cycleWatch, cycleWatch.elapsed(MILLISECONDS),
-                            head.getRecordId(), before.getRecordId(), after.getRecordId());
-                    before = head;
-                }
-
-                if (!success) {
-                    gcListener.info("TarMK GC #{}: compaction gave up compacting concurrent commits after {} cycles.",
-                            GC_COUNT, cycles);
-                    int forceTimeout = gcOptions.getForceTimeout();
-                    if (forceTimeout > 0) {
-                        gcListener.info("TarMK GC #{}: trying to force compact remaining commits for {} seconds. " +
-                                "Concurrent commits to the store will be blocked.",
-                                GC_COUNT, forceTimeout);
-                        gcListener.updateStatus(COMPACTION_FORCE_COMPACT.message());
-                        Stopwatch forceWatch = Stopwatch.createStarted();
-                        
-                        cycles++;
-                        cancel.timeOutAfter(forceTimeout, SECONDS);
-                        after = forceCompact(writer, cancel);
-                        success = after != null;
-                        if (success) {
-                            gcListener.info("TarMK GC #{}: compaction succeeded to force compact remaining commits " +
-                                            "after {} ({} ms).",
-                                            GC_COUNT, forceWatch, forceWatch.elapsed(MILLISECONDS));
-                        } else {
-                            if (cancel.get()) {
-                                gcListener.warn("TarMK GC #{}: compaction failed to force compact remaining commits " +
-                                        "after {} ({} ms). Compaction was cancelled: {}.",
-                                        GC_COUNT, forceWatch, forceWatch.elapsed(MILLISECONDS), cancel);
-                            } else {
-                                gcListener.warn("TarMK GC #{}: compaction failed to force compact remaining commits. " +
-                                        "after {} ({} ms). Most likely compaction didn't get exclusive access to the store.",
-                                        GC_COUNT, forceWatch, forceWatch.elapsed(MILLISECONDS));
-                            }
-                        }
-                    }
-                }
-
-                if (success) {
-                    writer.flush();
-                    gcListener.info("TarMK GC #{}: compaction succeeded in {} ({} ms), after {} cycles",
-                            GC_COUNT, watch, watch.elapsed(MILLISECONDS), cycles);
-                    return compactionSucceeded(newGeneration, after.getRecordId());
-                } else {
-                    gcListener.info("TarMK GC #{}: compaction failed after {} ({} ms), and {} cycles",
-                            GC_COUNT, watch, watch.elapsed(MILLISECONDS), cycles);
-                    return compactionAborted(newGeneration);
-                }
-            } catch (InterruptedException e) {
-                gcListener.error("TarMK GC #" + GC_COUNT + ": compaction interrupted", e);
-                currentThread().interrupt();
-                return compactionAborted(newGeneration);
-            } catch (IOException e) {
-                gcListener.error("TarMK GC #" + GC_COUNT + ": compaction encountered an error", e);
-                return compactionAborted(newGeneration);
-            }
-        }
-
-        private SegmentNodeState compact(NodeState head, SegmentWriter writer, Supplier<Boolean> cancel)
-        throws IOException {
-            if (gcOptions.isOffline()) {
-                return new Compactor(segmentReader, writer, getBlobStore(), cancel, gcOptions)
-                        .compact(EMPTY_NODE, head, EMPTY_NODE);
-            } else {
-                return writer.writeNode(head, cancel);
-            }
-        }
-
-        @CheckForNull
-        private SegmentNodeState forceCompact(@Nonnull final SegmentWriter writer,
-                                              @Nonnull final Supplier<Boolean> cancel)
-        throws InterruptedException {
-            RecordId compactedId = revisions.setHead(new Function<RecordId, RecordId>() {
-                @Nullable
-                @Override
-                public RecordId apply(RecordId base) {
-                    try {
-                        long t0 = currentTimeMillis();
-                        SegmentNodeState after = compact(
-                                segmentReader.readNode(base), writer, cancel);
-                        if (after == null) {
-                            gcListener.info("TarMK GC #{}: compaction cancelled after {} seconds",
-                                    GC_COUNT, (currentTimeMillis() - t0) / 1000);
-                            return null;
-                        } else {
-                            return after.getRecordId();
-                        }
-                    } catch (IOException e) {
-                        gcListener.error("TarMK GC #{" + GC_COUNT + "}: Error during forced compaction.", e);
-                        return null;
-                    }
-                }
-            },
-            timeout(gcOptions.getForceTimeout(), SECONDS));
-            return compactedId != null
-                    ? segmentReader.readNode(compactedId)
-                    : null;
-        }
-
-        /**
-         * Cleanup segments whose generation matches the {@link CompactionResult#reclaimer()} predicate.
-         * @return list of files to be removed
-         * @throws IOException
-         */
-        @Nonnull
-        private List<File> cleanup(@Nonnull CompactionResult compactionResult)
-        throws IOException {
-            Stopwatch watch = Stopwatch.createStarted();
-            Set<UUID> bulkRefs = newHashSet();
-            Map<TarReader, TarReader> cleaned = newLinkedHashMap();
-
-            long initialSize = 0;
-            fileStoreLock.writeLock().lock();
-            try {
-                gcListener.info("TarMK GC #{}: cleanup started.", GC_COUNT);
-                gcListener.updateStatus(CLEANUP.message());
-
-                newWriter();
-                segmentCache.clear();
-
-                // Suggest to the JVM that now would be a good time
-                // to clear stale weak references in the SegmentTracker
-                System.gc();
-
-                for (SegmentId id : tracker.getReferencedSegmentIds()) {
-                    if (id.isBulkSegmentId()) {
-                        bulkRefs.add(id.asUUID());
-                    }
-                }
-
-                for (TarReader reader : readers) {
-                    cleaned.put(reader, reader);
-                    initialSize += reader.size();
-                }
-            } finally {
-                fileStoreLock.writeLock().unlock();
-            }
-
-            gcListener.info("TarMK GC #{}: current repository size is {} ({} bytes)",
-                    GC_COUNT, humanReadableByteCount(initialSize), initialSize);
-
-            Set<UUID> reclaim = newHashSet();
-            for (TarReader reader : cleaned.keySet()) {
-                reader.mark(bulkRefs, reclaim, compactionResult.reclaimer());
-                log.info("{}: size of bulk references/reclaim set {}/{}",
-                        reader, bulkRefs.size(), reclaim.size());
-                if (shutdown) {
-                    gcListener.info("TarMK GC #{}: cleanup interrupted", GC_COUNT);
-                    break;
-                }
-            }
-            Set<UUID> reclaimed = newHashSet();
-            for (TarReader reader : cleaned.keySet()) {
-                cleaned.put(reader, reader.sweep(reclaim, reclaimed));
-                if (shutdown) {
-                    gcListener.info("TarMK GC #{}: cleanup interrupted", GC_COUNT);
-                    break;
-                }
-            }
-
-            // it doesn't account for concurrent commits that might have happened
-            long afterCleanupSize = 0;
-
-            List<TarReader> oldReaders = newArrayList();
-            fileStoreLock.writeLock().lock();
-            try {
-                // Replace current list of reader with the cleaned readers taking care not to lose
-                // any new reader that might have come in through concurrent calls to newWriter()
-                List<TarReader> sweptReaders = newArrayList();
-                for (TarReader reader : readers) {
-                    if (cleaned.containsKey(reader)) {
-                        TarReader newReader = cleaned.get(reader);
-                        if (newReader != null) {
-                            sweptReaders.add(newReader);
-                            afterCleanupSize += newReader.size();
-                        }
-                        // if these two differ, the former represents the swept version of the latter
-                        if (newReader != reader) {
-                            oldReaders.add(reader);
-                        }
-                    } else {
-                        sweptReaders.add(reader);
-                    }
-                }
-                readers = sweptReaders;
-            } finally {
-                fileStoreLock.writeLock().unlock();
-            }
-            tracker.clearSegmentIdTables(reclaimed, compactionResult.gcInfo());
-
-            // Close old readers *after* setting readers to the new readers to avoid accessing
-            // a closed reader from readSegment()
-            LinkedList<File> toRemove = newLinkedList();
-            for (TarReader oldReader : oldReaders) {
-                closeAndLogOnFail(oldReader);
-                File file = oldReader.getFile();
-                toRemove.addLast(file);
-            }
-            gcListener.info("TarMK GC #{}: cleanup marking files for deletion: {}", GC_COUNT, toFileNames(toRemove));
-
-            long finalSize = size();
-            long reclaimedSize = initialSize - afterCleanupSize;
-            stats.reclaimed(reclaimedSize);
-            gcJournal.persist(reclaimedSize, finalSize, getGcGeneration(),
-                    compactionMonitor.getCompactedNodes(),
-                    compactionResult.getCompactedRootId().toString10());
-            gcListener.cleaned(reclaimedSize, finalSize);
-            gcListener.info("TarMK GC #{}: cleanup completed in {} ({} ms). Post cleanup size is {} ({} bytes)" +
-                            " and space reclaimed {} ({} bytes).",
-                    GC_COUNT, watch, watch.elapsed(MILLISECONDS),
-                    humanReadableByteCount(finalSize), finalSize,
-                    humanReadableByteCount(reclaimedSize), reclaimedSize);
-            return toRemove;
-        }
-
-        private String toFileNames(@Nonnull List<File> files) {
-            if (files.isEmpty()) {
-                return "none";
-            } else {
-                return Joiner.on(",").join(files);
-            }
-        }
-
-        private void collectBulkReferences(Set<UUID> bulkRefs) {
-            for (SegmentId id : tracker.getReferencedSegmentIds()) {
-                if (id.isBulkSegmentId()) {
-                    bulkRefs.add(id.asUUID());
-                }
-            }
-        }
-
-        /**
-         * Finds all external blob references that are currently accessible
-         * in this repository and adds them to the given collector. Useful
-         * for collecting garbage in an external data store.
-         * <p>
-         * Note that this method only collects blob references that are already
-         * stored in the repository (at the time when this method is called), so
-         * the garbage collector will need some other mechanism for tracking
-         * in-memory references and references stored while this method is
-         * running.
-         * @param collector  reference collector called back for each blob reference found
-         */
-        synchronized void collectBlobReferences(ReferenceCollector collector) throws IOException {
-            segmentWriter.flush();
-            List<TarReader> tarReaders = newArrayList();
-            fileStoreLock.writeLock().lock();
-            try {
-                newWriter();
-                tarReaders.addAll(FileStore.this.readers);
-            } finally {
-                fileStoreLock.writeLock().unlock();
-            }
-
-            int minGeneration = getGcGeneration() - gcOptions.getRetainedGenerations() + 1;
-            for (TarReader tarReader : tarReaders) {
-                tarReader.collectBlobReferences(collector, minGeneration);
-            }
-        }
-
-        void cancel() {
-            cancelled = true;
-        }
-
-        /**
-         * Represents the cancellation policy for the compaction phase. If the disk
-         * space was considered insufficient at least once during compaction (or if
-         * the space was never sufficient to begin with), compaction is considered
-         * canceled. Furthermore when the file store is shutting down, compaction is
-         * considered canceled.
-         * Finally the cancellation can be triggered by a timeout that can be set
-         * at any time.
-         */
-        private class CancelCompactionSupplier implements Supplier<Boolean> {
-            private final FileStore store;
-
-            private String reason;
-            private volatile long deadline;
-
-            public CancelCompactionSupplier(@Nonnull FileStore store) {
-                cancelled = false;
-                this.store = store;
-            }
-
-            /**
-             * Set a timeout for cancellation. Setting a different timeout cancels
-             * a previous one that did not yet elapse. Setting a timeout after
-             * cancellation took place has no effect.
-             */
-            public void timeOutAfter(final long duration, @Nonnull final TimeUnit unit) {
-                deadline = currentTimeMillis() + MILLISECONDS.convert(duration, unit);
-            }
-
-            @Override
-            public Boolean get() {
-                // The outOfDiskSpace and shutdown flags can only transition from
-                // false (their initial values), to true. Once true, there should
-                // be no way to go back.
-                if (!store.sufficientDiskSpace.get()) {
-                    reason = "Not enough disk space";
-                    return true;
-                }
-                if (!store.sufficientMemory.get()) {
-                    reason = "Not enough memory";
-                    return true;
-                }
-                if (store.shutdown) {
-                    reason = "The FileStore is shutting down";
-                    return true;
-                }
-                if (cancelled) {
-                    reason = "Cancelled by user";
-                    return true;
-                }
-                if (deadline > 0 && currentTimeMillis() > deadline) {
-                    reason = "Timeout after " + deadline/1000 + " seconds";
-                    return true;
-                }
-                return false;
-            }
-
-            @Override
-            public String toString() { return reason; }
-        }
-    }
-
-    /**
-     * Instances of this class represent the result from a compaction.
-     * Either {@link #succeeded(int, SegmentGCOptions, RecordId) succeeded},
-     * {@link #aborted(int, int) aborted} or {@link #skipped(int, SegmentGCOptions) skipped}.
-     */
-    private abstract static class CompactionResult {
-        private final int currentGeneration;
-
-        protected CompactionResult(int currentGeneration) {
-            this.currentGeneration = currentGeneration;
-        }
-
-        /**
-         * Result of a succeeded compaction.
-         * @param newGeneration     the generation successfully created by compaction
-         * @param gcOptions         the current GC options used by compaction
-         * @param compactedRootId   the record id of the root created by compaction
-         */
-        static CompactionResult succeeded(
-                final int newGeneration,
-                @Nonnull final SegmentGCOptions gcOptions,
-                @Nonnull final RecordId compactedRootId) {
-            return new CompactionResult(newGeneration) {
-                int oldGeneration = newGeneration - gcOptions.getRetainedGenerations();
-
-                @Override
-                Predicate<Integer> reclaimer() {
-                    return CompactionResult.newOldReclaimer(oldGeneration);
-                }
-
-                @Override
-                boolean isSuccess() {
-                    return true;
-                }
-
-                @Override
-                RecordId getCompactedRootId() {
-                    return compactedRootId;
-                }
-            };
-        }
-
-        /**
-         * Result of an aborted compaction.
-         * @param currentGeneration  the current generation of the store
-         * @param failedGeneration   the generation that compaction attempted to create
-         */
-        static CompactionResult aborted(
-                int currentGeneration,
-                final int failedGeneration) {
-            return new CompactionResult(currentGeneration) {
-                @Override
-                Predicate<Integer> reclaimer() {
-                    return CompactionResult.newFailedReclaimer(failedGeneration);
-                }
-
-                @Override
-                boolean isSuccess() {
-                    return false;
-                }
-            };
-        }
-
-        /**
-         * Result serving as a placeholder for a compaction that was skipped.
-         * @param currentGeneration  the current generation of the store
-         * @param gcOptions         the current GC options used by compaction
-         */
-        static CompactionResult skipped(
-                final int currentGeneration,
-                @Nonnull final SegmentGCOptions gcOptions) {
-            return new CompactionResult(currentGeneration) {
-                int oldGeneration = currentGeneration - gcOptions.getRetainedGenerations();
-                @Override
-                Predicate<Integer> reclaimer() {
-                    return CompactionResult.newOldReclaimer(oldGeneration);
-                }
-
-                @Override
-                boolean isSuccess() {
-                    return true;
-                }
-            };
-        }
-
-        /**
-         * @return  a predicate determining which segments to
-         *          {@link GarbageCollector#cleanup(CompactionResult) clean up} for
-         *          the given compaction result.
-         */
-        abstract Predicate<Integer> reclaimer();
-
-        /**
-         * @return  {@code true} for {@link #succeeded(int, SegmentGCOptions, RecordId) succeeded}
-         *          and {@link #skipped(int, SegmentGCOptions) skipped}, {@code false} otherwise.
-         */
-        abstract boolean isSuccess();
-
-        /**
-         * @return  the record id of the compacted root on {@link #isSuccess() success},
-         *          {@link RecordId#NULL} otherwise.
-         */
-        RecordId getCompactedRootId() {
-            return RecordId.NULL;
-        }
-
-        /**
-         * @return  a diagnostic message describing the outcome of this compaction.
-         */
-        String gcInfo() {
-            return  "gc-count=" + GC_COUNT +
-                    ",gc-status=" + (isSuccess() ? "success" : "failed") +
-                    ",store-generation=" + currentGeneration +
-                    ",reclaim-predicate=" + reclaimer();
-        }
-
-        private static Predicate<Integer> newFailedReclaimer(final int failedGeneration) {
-            return new Predicate<Integer>() {
-                @Override
-                public boolean apply(Integer generation) {
-                    return generation == failedGeneration;
-                }
-                @Override
-                public String toString() {
-                    return "(generation==" + failedGeneration + ")";
-                }
-            };
-        }
-
-        private static Predicate<Integer> newOldReclaimer(final int oldGeneration) {
-            return new Predicate<Integer>() {
-                @Override
-                public boolean apply(Integer generation) {
-                    return generation <= oldGeneration;
-                }
-                @Override
-                public String toString() {
-                    return "(generation<=" + oldGeneration + ")";
-                }
-            };
         }
     }
 

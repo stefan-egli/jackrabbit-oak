@@ -18,9 +18,6 @@ package org.apache.jackrabbit.oak.security.user.autosave;
 
 import java.security.Principal;
 import java.util.Iterator;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.jcr.RepositoryException;
 
 import org.apache.jackrabbit.api.security.user.Authorizable;
@@ -31,6 +28,8 @@ import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.spi.security.user.util.UserUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Implementation of the user management that allows to set the autosave flag.
@@ -121,7 +120,7 @@ public class AutoSaveEnabledManager implements UserManager {
     @Override
     public User createSystemUser(String userID, String intermediatePath) throws RepositoryException {
         try {
-            return wrap(dlg.createUser(userID, intermediatePath));
+            return wrap(dlg.createSystemUser(userID, intermediatePath));
         } finally {
             autosave();
         }
@@ -169,7 +168,7 @@ public class AutoSaveEnabledManager implements UserManager {
     }
 
     @Override
-    public void autoSave(boolean enable) throws RepositoryException {
+    public void autoSave(boolean enable) {
         autosave = enable;
     }
 
@@ -187,7 +186,7 @@ public class AutoSaveEnabledManager implements UserManager {
         }
     }
 
-    @CheckForNull
+    @Nullable
     Authorizable wrap(@Nullable Authorizable authorizable) {
         if (authorizable == null) {
             return null;
@@ -199,13 +198,13 @@ public class AutoSaveEnabledManager implements UserManager {
         }
     }
 
-    @Nonnull
-    User wrap(@Nonnull User user) {
+    @NotNull
+    private User wrap(@NotNull User user) {
         return new UserImpl(user, this);
     }
 
-    @Nonnull
-    Group wrap(@Nonnull Group group) {
+    @NotNull
+    private Group wrap(@NotNull Group group) {
         return new GroupImpl(group, this);
     }
 }

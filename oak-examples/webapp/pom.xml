@@ -26,7 +26,7 @@
   <parent>
     <groupId>org.apache.jackrabbit</groupId>
     <artifactId>oak-parent</artifactId>
-    <version>1.8-SNAPSHOT</version>
+    <version>1.14-SNAPSHOT</version>
     <relativePath>../../oak-parent/pom.xml</relativePath>
   </parent>
   <artifactId>oak-webapp</artifactId>
@@ -35,8 +35,7 @@
   <description>Web application that hosts and serves a Jackrabbit Oak content repository</description>
 
   <properties>
-    <tomcat.version>7.0.40</tomcat.version>
-    <tika.version>1.7</tika.version>
+    <tomcat.version>7.0.93</tomcat.version>
     <skip.deployment>true</skip.deployment>
   </properties>
 
@@ -58,6 +57,10 @@
         <exclusion>
           <groupId>commons-logging</groupId>
           <artifactId>commons-logging</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-log4j12</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -93,6 +96,11 @@
     <dependency>
       <groupId>org.apache.jackrabbit</groupId>
       <artifactId>oak-lucene</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.jackrabbit</groupId>
+      <artifactId>oak-store-composite</artifactId>
       <version>${project.version}</version>
     </dependency>
     <dependency>
@@ -136,8 +144,8 @@
     </dependency>
     <dependency>
       <groupId>org.codehaus.groovy</groupId>
-      <artifactId>groovy-all</artifactId>
-      <version>2.3.6</version>
+      <artifactId>groovy</artifactId>
+      <version>2.5.2</version>
     </dependency>
 
     <dependency>
@@ -171,7 +179,7 @@
     <dependency>
       <groupId>net.sourceforge.htmlunit</groupId>
       <artifactId>htmlunit</artifactId>
-      <version>2.24</version>
+      <version>2.33</version>
       <scope>test</scope>
       <exclusions>
         <exclusion>
@@ -181,9 +189,19 @@
       </exclusions>
     </dependency>
     <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>jul-to-slf4j</artifactId>
       <version>${slf4j.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -191,9 +209,13 @@
   <build>
     <plugins>
       <plugin>
+        <artifactId>maven-war-plugin</artifactId>
+        <version>3.2.2</version>
+      </plugin>
+      <plugin>
          <groupId>org.eclipse.jetty</groupId>
          <artifactId>jetty-maven-plugin</artifactId>
-         <version>9.2.8.v20150217</version>
+         <version>9.4.11.v20180605</version>
          <configuration>
            <scanIntervalSeconds>0</scanIntervalSeconds>
            <connectors>
@@ -231,7 +253,7 @@
         <!-- add the jar created by maven-antrun-plugin in our artifacts -->
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>build-helper-maven-plugin</artifactId>
-        <version>1.9</version>
+        <version>3.0.0</version>
         <executions>
           <execution>
             <id>attach-artifacts</id>
@@ -275,7 +297,6 @@
       </plugin>
       <plugin>
         <artifactId>maven-clean-plugin</artifactId>
-        <version>2.5</version>
         <configuration>
           <filesets>
             <fileset>

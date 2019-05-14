@@ -16,8 +16,6 @@
  */
 package org.apache.jackrabbit.oak.spi.security.authorization.cug.impl;
 
-import javax.annotation.Nonnull;
-
 import com.google.common.collect.Iterables;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
@@ -25,6 +23,7 @@ import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.util.Text;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * Utility class to determine the top-level CUG paths as recorded on the root
@@ -32,7 +31,7 @@ import org.apache.jackrabbit.util.Text;
  */
 class TopLevelPaths implements CugConstants {
 
-    static final long NONE = -1;
+    private static final long NONE = -1;
     static final long MAX_CNT = 10;
 
     private final Root root;
@@ -53,7 +52,7 @@ class TopLevelPaths implements CugConstants {
         return hasAny;
     }
 
-    boolean contains(@Nonnull String path) {
+    boolean contains(@NotNull String path) {
         if (!hasAny()) {
             return false;
         }

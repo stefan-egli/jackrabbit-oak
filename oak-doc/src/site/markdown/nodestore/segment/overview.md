@@ -23,31 +23,18 @@
     * [Estimation, Compaction and Cleanup](#estimation-compaction-cleanup)
     * [Offline Garbage Collection](#offline-garbage-collection)
     * [Online Garbage Collection](#online-garbage-collection)
-        * [Monitoring the log](#monitoring-the-log)
-            * [When did garbage collection start?](#when-did-garbage-collection-start)
-            * [When did estimation start?](#when-did-estimation-start)
-            * [Is estimation disabled?](#is-estimation-disabled)
-            * [Was estimation cancelled?](#was-estimation-cancelled)
-            * [When did estimation complete?](#when-did-estimation-complete)
-            * [When did compaction start?](#when-did-compaction-start)
-            * [Is compaction disabled?](#is-compaction-disabled)
-            * [Was compaction cancelled?](#was-compaction-cancelled)
-            * [When did compaction complete?](#when-did-compaction-complete)
-            * [How does compaction work with concurrent writes?](#how-does-compaction-works-with-concurrent-writes)
-            * [When did clean-up start?](#when-did-cleanup-start)
-            * [Was cleanup cancelled?](#was-cleanup-cancelled)
-            * [When did cleanup complete?](#when-did-cleanup-complete)
-            * [What happened during cleanup?](#what-happened-during-cleanup)
-        * [Monitoring via JMX](#monitoring-via-jmx)
-            * [SegmentRevisionGarbageCollection](#SegmentRevisionGarbageCollection)
+* [Monitoring](#monitoring)            
 * [Tools](#tools)
+    * [Segment-Copy](#segment-copy)
     * [Backup](#backup)
     * [Restore](#restore)
     * [Check](#check)
     * [Compact](#compact)
     * [Debug](#debug)
+    * [IOTrace](#iotrace)
     * [Diff](#diff)
     * [History](#history)
+    * [Recover Journal](#recover-journal)
 
 ## <a name="overview"/> Overview
 
@@ -76,6 +63,7 @@ Most of the operations on repository data generate a certain amount of garbage.
 This garbage is a byproduct of the repository operations and consists of leftover data that is not usable by the user.
 If left unchecked, this garbage would just pile up, consume disk space and pollute in-memory data structures.
 To avoid this, Oak Segment Tar defines garbage collection procedures to eliminate unnecessary data.
+The implementation of garbage collection in Oak evolved heavily between Oak 1.0 and Oak 1.8. See [Memoirs in Garbage Collection](onrc-memoirs.html) for an historical account.
 
 ### <a name="generational-garbage-collection"/> Generational Garbage Collection
 
@@ -105,15 +93,12 @@ If there is not enough garbage to justify the creation of a new generation, the 
 If the output of this phase reports that the amount of garbage is beyond a certain threshold, the system creates a new generation and goes on with the next phase.
 
 Compaction executes after a new generation is created.
-The purpose of compaction is to identify data that is currently used by the user.
-Once the system has a clear picture of which pieces of data the user is currently using, everything is copied to the new generation.
-This phase might be very time consuming depending on the size of the repository.
-The bigger the repository, the more has to be copied to the new generation.
+The purpose of compaction is to create a compact representation of the current generation. For this the current generation is copied to the new generation leaving out anything from the current generation that is not reachable anymore. Starting with Oak 1.8 compaction can operate in either of two modes: full compaction and tail compaction. Full compaction copies all revisions pertaining to the current generation to the new generation. In contrast tail compaction only copies the most recent ones. The two compaction modes differ in usage of system resources and how much time they consume. While full compaction is more thorough overall, it usually requires much more time, disk spice and disk IO than tail compaction.
 
 Cleanup is the last phase of garbage collection and kicks in as soon as compaction is done.
 Once relevant data is safe in the new generation, old and unused data from a previous generation can be removed.
 This phase locates outdated pieces of data from one of the oldest generations and removes it from the system.
-This is the only phase where data is actually deleted and disk space is finally freed.
+This is the only phase where data is actually deleted and disk space is finally freed. The amount of freed disk space depends on the preceding compaction operation. In general cleanup can free less space after a tail compaction than after a full compaction. However, this only becomes effective a further garbage collection cycle due to the system always retaining a total of two generations. 
 
 ### <a name="offline-garbage-collection"/> Offline Garbage Collection
 
@@ -127,7 +112,7 @@ In such a case, the human operator has to take offline - hence the name - the sy
 Since offline garbage collection requires human intervention to run, the estimation phase is not executed at all.
 The human operator who decides to run offline garbage collection does so because he or she decided that the garbage in the repository is exceeding some arbitrary threshold.
 Since the decision comes from a human operator, offline garbage collection is not in charge of implementing heuristics to decide if and when garbage collection should be run.
-The offline garbage collection process consist of the compaction and cleanup phases only.
+The offline garbage collection process consist of the compaction and cleanup phases only. It always employs full compaction with the subsequent cleanup retaining a single generation. 
 
 The main drawback of offline garbage collection is that the process has to take exclusive control of the repository.
 Nevertheless, this is also a strength.
@@ -224,6 +209,20 @@ TarMK GC #2: compaction started, gc options=SegmentGCOptions{paused=false, estim
 
 The message includes a dump of the garbage collection options that are used during the compaction phase.
 
+##### <a name="what-is-the-compaction-type"/> What is the compaction type?
+
+The type of the compaction phase is determined by the configuration. A log message indicates which compaction type is used.
+
+```
+TarMK GC #2: running ${MODE} compaction
+```
+
+Here ${MODE} is either `full` or `tail`. Under some circumstances (e.g. on the very first garbage collection run) when a tail compaction is scheduled to run the system needs to fall back to a full compaction. This is indicated in the log via the following message:
+
+```
+TarMK GC #2: no base state available, running full compaction instead
+```
+
 ##### <a name="is-compaction-disabled"/> Is compaction disabled?
 
 The compaction phase can be skipped by pausing the garbage collection process. If compaction is paused, the following message is printed.
@@ -275,6 +274,18 @@ There is also a special message that is printed if the thread running the compac
 
 ```
 TarMK GC #2: compaction interrupted
+```
+
+##### <a name="how-does-compaction-deal-with-checkpoints"/> How does compaction deal with checkpoints?
+
+Since checkpoints share a lot of common data between themselves and between the actual content compaction handles them individually deduplicating as much content as possible. The following messages will be printed to the log during the process.
+
+```
+TarMK GC #2: Found checkpoint 4b2ee46a-d7cf-45e7-93c3-799d538f85e6 created at Wed Nov 29 15:31:43 CET 2017.
+TarMK GC #2: Found checkpoint 5c45ca7b-5863-4679-a7c5-6056a999a6cd created at Wed Nov 29 15:31:43 CET 2017.
+TarMK GC #2: compacting checkpoints/4b2ee46a-d7cf-45e7-93c3-799d538f85e6/root.
+TarMK GC #2: compacting checkpoints/5c45ca7b-5863-4679-a7c5-6056a999a6cd/root.
+TarMK GC #2: compacting root.
 ```
 
 ##### <a name="how-does-compaction-works-with-concurrent-writes"/> How does compaction work with concurrent writes?
@@ -392,15 +403,6 @@ TarMK GC #1: current repository size is 89.3 GB (89260786688 bytes)
 ```
 
 After that, the cleanup phase will iterate through every TAR file and figure out which segments are still in use and which ones can be reclaimed.
-Cleanup will print a sequence of messages like the following.
-
-```
-data00000a.tar: size of bulk references/reclaim set 0/6
-```
-
-The first part of the message is the TAR file analyzed last.
-The two numbers at the end give an idea of how many references to segments are being (transitively) followed and how many of them point to bulk segments that can be removed.
-
 After the cleanup phase scanned the repository, TAR files are purged of unused segments.
 In some cases, a TAR file would end up containing no segments at all.
 In this case, the TAR file is marked for deletion and the following message is printed.
@@ -421,13 +423,170 @@ Removed files data00000a.tar,data00001a.tar,data00002a.tar
 The output of this message can vary.
 It depends on the amount of segments that were cleaned up, on how many TAR files were emptied and on how often the background activity removes unused files.
 
-#### <a name="monitoring-via-jmx"/> Monitoring via JMX
+#### <a name="monitoring"/> Monitoring
 
 The Segment Store exposes certain pieces of information via JMX.
 This allows clients to easily access some statistics about the Segment Store, and connect the Segment Store to whatever monitoring infrastructure is in place.
 Moreover, JMX can be useful to execute some low-level operations in a manual fashion.
 
-##### <a name="SegmentRevisionGarbageCollection"/> SegmentRevisionGarbageCollection
+* Each session exposes an [SessionMBean](#SessionMBean) instance, which contains counters like the number and rate of reads and writes to the session.
+* The [RepositoryStatsMBean](#RepositoryStatsMBean) exposes endpoints to monitor the number of open sessions, the session login rate, the overall read and write load across all sessions, the overall read and write timings across all sessions and overall load and timings for queries and observation.
+* The [SegmentNodeStoreStatsMBean](#SegmentNodeStoreStatsMBean) exposes endpoints to monitor commits: number and rate, number of queued commits and queuing times.
+* The [FileStoreStatsMBean](#FileStoreStatsMBean) exposes endpoints reflecting the amount of data written to disk, the number of tar files on disk and the total footprint on disk.
+* The [SegmentRevisionGarbageCollection](#SegmentRevisionGarbageCollection) MBean tracks statistics about garbage collection.  
+
+##### <a name="SessionMBean"/> SessionMBean
+Each session exposes an `SessionMBean` instance, which contains counters like the number and rate of reads and writes to the session:
+
+* **getInitStackTrace (string)**
+A stack trace from where the session was acquired.
+
+* **AuthInfo (AuthInfo)**
+The `AuthInfo` instance for the user associated with the session.
+
+* **LoginTimeStamp (string)**
+The time stamp from when the session was acquired.
+
+* **LastReadAccess (string)**
+The time stamp from the last read access
+
+* **ReadCount (long)**
+The number of read accesses on this session
+
+* **ReadRate (double)**
+The read rate in number of reads per second on this session
+
+* **LastWriteAccess (string)**
+The time stamp from the last write access
+
+* **WriteCount (long)**
+The number of write accesses on this session
+
+* **WriteRate (double)**
+The write rate in number of writes per second on this session
+
+* **LastRefresh (string)**
+The time stamp from the last refresh on this session
+
+* **RefreshStrategy (string)**
+The refresh strategy of the session
+
+* **RefreshPending (boolean)**
+A boolean indicating whether the session will be refreshed on next access.
+
+* **RefreshCount (long)**
+The number of refresh operations on this session
+
+* **RefreshRate (double)**
+The refresh rate in number of refreshes per second on this session
+
+* **LastSave (string)**
+The time stamp from the last save on this session
+
+* **SaveCount (long)**
+The number of save operations on this session
+
+* **SaveRate (double)**
+The save rate in number of saves per second on this session
+
+* **SessionAttributes (string[])**
+The attributes associated with the session
+
+* **LastFailedSave (string)**
+The stack trace of the last exception that occurred during a save operation
+
+* **refresh**
+Refresh this session.
+
+##### <a name="RepositoryStatsMBean"/> RepositoryStatsMBean
+The `RepositoryStatsMBean` exposes endpoints to monitor the number of open sessions, the session login rate, the overall read and write load across all sessions, the overall read and write timings across all sessions and overall load and timings for queries and observation.
+
+* **SessionCount (CompositeData)**
+Number of currently logged in sessions.
+
+* **SessionLogin (CompositeData)**
+Number of calls sessions that have been logged in.
+
+* **SessionReadCount (CompositeData)**
+Number of read accesses through any session.
+
+* **SessionReadDuration (CompositeData)**
+Total time spent reading from sessions in nano seconds.
+
+* **SessionReadAverage (CompositeData)**
+Average time spent reading from sessions in nano seconds. This is the sum of all read durations divided by the number of reads in the respective time period.
+
+* **SessionWriteCount (CompositeData)**
+Number of write accesses through any session.
+
+* **SessionWriteDuration (CompositeData)**
+Total time spent writing to sessions in nano seconds.
+
+* **SessionWriteAverage (CompositeData)**
+Average time spent writing to sessions in nano seconds. This is the sum of all write durations divided by the number of writes in the respective time period.
+
+* **QueryCount()**
+Number of queries executed.
+
+* **QueryDuration (CompositeData)**
+Total time spent evaluating queries in milli seconds.
+
+* **QueryAverage (CompositeData)**
+Average time spent evaluating queries in milli seconds. This is the sum of all query durations divided by the number of queries in the respective time period.
+
+* **ObservationEventCount (CompositeData)**
+Total number of observation {@code Event} instances delivered to all observation listeners.
+
+* **ObservationEventDuration (CompositeData)**
+Total time spent processing observation events by all observation listeners in nano seconds.
+
+* **ObservationEventAverage**
+Average time spent processing observation events by all observation listeners in nano seconds. This is the sum of all observation durations divided by the number of observation events in the respective time period.
+
+* **ObservationQueueMaxLength (CompositeData)**
+Maximum length of observation queue in the respective time period.
+
+
+##### <a name="SegmentNodeStoreStatsMBean"/> SegmentNodeStoreStatsMBean
+The `SegmentNodeStoreStatsMBean` exposes endpoints to monitor commits: number and rate, number of queued commits and queuing times.
+
+* **CommitsCount (CompositeData)**
+Time series of the number of commits
+    
+* **QueuingCommitsCount (CompositeData)**
+Time series of the number of commits queuing
+    
+* **CommitTimes (CompositeData)**
+Time series of the commit times
+    
+* **QueuingTimes (CompositeData)**
+Time series of the commit queuing times
+
+##### <a name="FileStoreStatsMBean"/> FileStoreStatsMBean
+The `FileStoreStatsMBean` exposes endpoints reflecting the amount of data written to disk, the number of tar files on disk and the total footprint on disk.
+
+* **ApproximateSize (long)**
+An approximate disk footprint of the Segment Store.
+
+* **TarFileCount (int)**
+The number of tar files of the Segment Store.
+
+* **WriteStats (CompositeData)**
+Time series of the writes to repository
+
+* **RepositorySize (CompositeData)**
+Time series of the writes to repository
+
+* **StoreInfoAsString (string)**
+A human readable descriptive representation of the values exposed by this MBean.
+    
+* **JournalWriteStatsAsCount (long)**
+Number of writes to the journal of this Segment Store.
+    
+* **JournalWriteStatsAsCompositeData (CompositeData)**
+Time series of the writes to the journal of this Segment Store.
+
+##### <a name="SegmentRevisionGarbageCollection"/> SegmentRevisionGarbageCollection MBean
 
 The `SegmentRevisionGarbageCollection` MBean tracks statistics about garbage collection.
 Some of the statistics are specific to specific phases of the garbage collection process, others are more widely applicable.
@@ -450,13 +609,17 @@ This parameter is used only if compaction is configured to take exclusive contro
 * **RetainedGenerations (int)**
 How many generations should be preserved when cleaning up the Segment Store.
 When the cleanup phase runs, only the latest `RetainedGenerations` generations are kept intact.
-Older generations will be deleted.
+Older generations will be deleted. *Deprecated*: as of Oak 1.8 this value is fixed to 2 generations and cannot be modified.
 * **GcSizeDeltaEstimation (long)**
 The size (in bytes) of new content added to the repository since the end of the last garbage collection that would trigger another garbage collection run.
 This parameter influences the behaviour of the estimation phase.
 * **EstimationDisabled (boolean)**
 Determines if the estimation phase is disabled.
 If this parameter is set to `true`, the estimation phase will be skipped and compaction will run unconditionally.
+* **GCType ("FULL" or "TAIL")**
+Determines the type of the garbage collection that should run when invoking the `startRevisionGC` operation.
+* **RevisionGCProgressLog (long)**
+The number of processed nodes after which a progress message is logged. `-1` indicates no logging.
 * **MemoryThreshold (int)**
 A number between `0` and `100` that represents the percentage of heap memory that should always be free during compaction.
 If the amount of free memory falls below the provided percentage, compaction will be interrupted.
@@ -478,6 +641,14 @@ The last log message produced during garbage collection.
 * **Status (string)**
 The current status of the garbage collection process.
 This property can assume the values `idle`, `estimation`, `compaction`, `compaction-retry-N` (where `N` is the number of the current retry iteration), `compaction-force-compact` and `cleanup`.
+* **RevisionGCRunning (boolean)**
+Indicates whether online revision garbage collection is currently running.
+* **CompactedNodes (long)**
+The number of compacted nodes during the previous garbage collection
+* **EstimatedCompactableNodes (long)**
+The estimated number of nodes to compact during the next garbage collection. `-1` indicates an estimated value is not available.
+* **EstimatedRevisionGCCompletion (int)**
+Estimated percentage completed for the current garbage collection run. `-1` indicates an estimated percentage is not available.
 
 The `SegmentRevisionGarbageCollection` MBean also exposes the following management operations.
 
@@ -495,6 +666,31 @@ Oak Segment Tar exposes a number of command line tools that can be used to perfo
 
 The tools are exposed as sub-commands of [Oak Run](https://github.com/apache/jackrabbit-oak/tree/trunk/oak-run).
 The following sections assume that you have built this module or that you have a compiled version of it.
+
+### <a name="remote-segment-stores"/> Remote Segment Stores
+Besides the local storage in TAR files (previously known as TarMK), support for remote Segment Store(s) was introduced in Apache Oak. For connecting to a remote Segment Store, a `cloud-prefix:URI` argument needs to be provided. This applies wherever a `PATH` to the Segment Store was needed.
+
+**Connection Instructions**:
+
+* **Microsoft Azure** The `cloud-prefix` for MS Azure is `az`, therefore a valid connection argument would be `az:https://myaccount.blob.core.windows.net/container/repository`, where the part after `:` is the Azure URL identifier for the _repository_ directory inside the specified _container_ of the _myaccount_ Azure storage account. The last missing piece is the secret key which will be supplied as an environment variable, i.e. `AZURE_SECRET_KEY`.
+
+### <a name="segment-copy"/> Segment-Copy
+```
+java -jar oak-run.jar segment-copy [--verbose] SOURCE DESTINATION
+```
+
+The `segment-copy` command allows the "translation" of the Segment Store at `SOURCE` from one persistence type (e.g. local TarMK Segment Store) to a different persistence type (e.g. remote Azure Segment Store), saving the resulted Segment Store at `DESTINATION`. 
+Unlike a sidegrade peformed with `oak-upgrade` (see [Repository Migration](#../../migration.md)) which includes only the current head state, this translation includes __all previous revisions persisted in the Segment Store__, therefore retaining the entire history.
+
+`SOURCE` must be a valid path/uri to an existing Segment Store. 
+`DESTINATION` must be a valid path/uri for the resulting Segment Store. 
+Both are specified as `PATH | cloud-prefix:URI`. 
+Please refer to the [Remote Segment Stores](#remote-segment-stores) section for details on how to correctly specify connection URIs.
+
+If the `--verbose` option is specified, the command will print detailed progress information messages. 
+These include individual segments being transfered from `SOURCE` to `DESTINATION` at a certain point in time.
+If not specified, progress information messages will be disabled.
+
 
 ### <a name="backup"/> Backup
 
@@ -531,13 +727,13 @@ This tool is the counterpart of `backup`.
 ### <a name="check"/> Check
 
 ```
-java -jar oak-run.jar check PATH [--journal JOURNAL] [--notify SECS] [--bin] [--filter PATH1[,PATH2,..,PATHn]] [--io-stats]
+java -jar oak-run.jar check PATH [--journal JOURNAL] [--notify SECS] [--bin] [--head] [--checkpoints all | cp1[,cp2,..,cpn]]  [--filter PATH1[,PATH2,..,PATHn]] [--io-stats]
 ```
 
 The `check` tool inspects an existing Segment Store at `PATH` for eventual inconsistencies. 
 The algorithm implemented by this tool traverses every revision in the journal, from the most recent to the oldest.
-For every revision, the actual nodes and properties are traversed, verifying that every piece of data is reachable and undamaged.
-A deep scan of the content tree, traversing every node, will be performed by default.
+For every revision, the actual nodes and properties are traversed, verifying that every piece of data is reachable and undamaged. Moreover, if `--head` and `--checkpoints` options are used, the scope of the traversal can be limited to head state and/or a subset of checkpoints.
+A deep scan of the content tree, traversing every node and every property will be performed by default. The default scope includes head state and all checkpoints.
   
 If the `--journal` option is specified, the tool will use the journal file at `JOURNAL` instead of picking up the one contained in `PATH`. 
 `JOURNAL` must be a path to a valid journal file for the Segment Store. 
@@ -550,9 +746,18 @@ If the `--bin` option is specified, the tool will scan the full content of binar
 If not specified, the binary properties will not be traversed.
 The `--bin` option has no effect on binary properties stored in an external Blob Store.
 
+If the `--head` option is specified, the tool will scan **only** the head state, ignoring any available checkpoints.
+
+If the `--checkpoints` option is specified, the tool will scan **only** the specified checkpoints, ignoring the head state. At least one argument is expected with this option; multiple arguments need to be comma-separated.
+The checkpoints will be traversed in the same order as they were specified. In order to scan all checkpoints, the correct argument for this option is `all` (i.e. `--checkpoints all`).
+
+As mentioned in the paragraph above, by default, both head state and all checkpoints will be checked. In other words, this is equivalent to having both options, `--head` and `--checkpoints all`, specified.
+
 If the `--filter` option is specified, the tool will traverse only the absolute paths specified as arguments.
 At least one argument is expected with this option; multiple arguments need to be comma-separated.
-The paths will be traversed in the same order as they were specified.
+The paths will be traversed in the same order as they were specified. 
+
+The filtering applies to both head state and/or checkpoints, depending on the scope of the scan. For example, `--head --filter PATH1` will limit the traversal to `PATH1` under head state, `--checkpoints cp1 --filter PATH2` will limit the traversal to `PATH2` under `cp1`, while `--filter PATH3` will limit it to `PATH3`, **for both head state and all checkpoints**.
 If the option is not specified, the full traversal of the repository (rooted at `/`) will be performed.
 
 If the `--io-stats` option is specified, the tool will print some statistics about the I/O operations performed during the execution of the check command.
@@ -561,11 +766,55 @@ This option is optional and is disabled by default.
 ### <a name="compact"/> Compact
 
 ```
-java -jar oak-run.jar compact PATH
+java -jar oak-run.jar compact [--force] [--mmap] PATH | cloud-prefix:URI
 ```
 
-The `compact` command performs offline compaction on the Segment Store at `PATH`. 
-`PATH` must be a valid path to an existing Segment Store. 
+The `compact` command performs offline compaction of the local/remote Segment Store at `PATH`/`URI`. 
+`PATH`/`URI` must be a valid path/uri to an existing Segment Store. Currently, Azure Segment Store is the only supported remote Segment Store. 
+Please refer to the [Remote Segment Stores](#remote-segment-stores) section for details on how to correctly specify connection URIs.
+
+If the optional `--force [Boolean]` argument is set to `true` the tool ignores a non 
+matching Segment Store version. *CAUTION*: this will upgrade the Segment Store to the 
+latest version, which is incompatible with older versions. *There is no way to downgrade 
+an accidentally upgraded Segment Store*.  
+
+The optional `--mmap [Boolean]` argument can be used to control the file access mode. Set
+to `true` for memory mapped access and `false` for file access. If not specified, memory 
+mapped access is used on 64 bit systems and file access is used on 32 bit systems. On
+Windows, regular file access is always enforced and this option is ignored.
+
+To enable logging during offline compaction a Logback configuration file has to be injected 
+via the `logback.configurationFile` property. In addition the `compaction-progress-log`
+property controls the number of compacted nodes that will be logged. The default value is 150000.
+
+##### Example
+
+The following command uses `logback-compaction.xml` to configure Logback logging compaction
+progress every 1000 nodes to the console.
+
+```
+java -Dlogback.configurationFile=logback-compaction.xml -Dcompaction-progress-log=1000 -jar oak-run.jar compact /path/to/segmenstore
+```
+
+logback-compaction.xml:
+
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true">
+  
+  <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+  
+  <logger name="org.apache.jackrabbit.oak.segment.file.FileStore" level="INFO"/>
+  
+  <root level="warn">
+    <appender-ref ref="console" />
+  </root>
+</configuration> 
+```
 
 ### <a name="debug"/> Debug
 
@@ -599,6 +848,45 @@ Both record IDs must point to valid node records.
 The pair of record IDs can be followed by a path, like `333dc24d-438f-4cca-8b21-3ebf67c05856:12345-46116fda-7a72-4dbc-af88-a09322a7753a:67890/path/to/child`.
 When a node record ID range is specified, the tool will perform a diff between the two nodes pointed by the record IDs, optionally following the provided path.
 The result of the diff will be printed in JSOP format.
+
+### <a name="iotrace"/> IOTrace
+
+````
+java -jar oak-run.jar iotrace PATH --trace DEPTH|BREADTH [--depth DEPTH] [--mmap MMAP] [--output OUTPUT] [--path PATH] [--segment-cache SEGMENT_CACHE] 
+
+usage: iotrace path/to/segmentstore <options>
+Option (* = required)      Description
+---------------------      -----------
+--count <Integer>          Number of paths to access Applies to RANDOM (default: 1000)
+--depth <Integer>          Maximal depth of the traversal. Applies to BREADTH, DEPTH (default: 5)
+--mmap <Boolean>           use memory mapping for the file store (default: true)
+--output <File>            output file where the IO trace is written to (default: iotrace.csv)
+--path <String>            starting path for the traversal. Applies to BREADTH, DEPTH (default: /root)
+--paths <File>             file containing list of paths to traverse. Applies to RANDOM (default: paths.txt)
+--seed <Long>              Seed for generating random numbers. Applies to RANDOM (default: 0)
+--segment-cache <Integer>  size of the segment cache in MB (default: 256)
+* --trace <Traces>         type of the traversal. Either of [DEPTH, BREADTH, RANDOM]
+````
+
+The `iotrace` command collects IO traces of read accesses to the segment store's back-end 
+(e.g. disk). Traffic patterns can be specified via the `--trace` option. Permissible values 
+are `DEPTH` for depth first traversal, `BREADTH` for breadth first traversal and `RANDOM` for
+random access. The `--depth` option limits the maximum number of levels traversed. 
+The `--path` option specifies the node where traversal starts (from the super root). 
+The `--mmap` and `--segment-cache` options configure memory mapping and segment cache size 
+of the segment store, respectively.
+The `--paths` option specifies the list of paths to access. The file must contain a single path 
+per line. 
+The `--seed` option specifies the seed to used when randomly choosing a paths.  
+The `--output` options specifies the file where the IO trace is stored. IO traces are stored in
+CSV format of the following form:
+
+```
+timestamp,file,segmentId,length,elapsed
+1522147945084,data01415a.tar,f81378df-b3f8-4b25-0000-00000002c450,181328,171849
+1522147945096,data01415a.tar,f81378df-b3f8-4b25-0000-00000002c450,181328,131272
+1522147945097,data01415a.tar,f81378df-b3f8-4b25-0000-00000002c450,181328,142766
+``` 
 
 ### <a name="diff"/> Diff
 
@@ -653,3 +941,30 @@ The `--depth` parameter determines if the content of a single node should be pri
 `DEPTH` must be a positive integer specifying how deep the printed content should be.
 If this option is not specified, the depth is assumed to be `0`, i.e. only information about the node will be printed.
 
+### <a name="recover-journal"/> Recover journal
+
+```
+java -jar oak-run.jar recover-journal [--help] PATH
+```
+
+The `recover-journal` command rebuilds a journal by scanning the content of the Segment Store at `PATH`.
+
+The command performs the following steps:
+
+- It scans the content of all segments for potential head states.
+- It sorts the found head states from older to newer.
+- It checks the consistency of the found head states until the first consistent head state is found.
+
+During the consistency check, some segments might be missing.
+The command outputs a stack trace on stderr every time it finds a new missing segment.
+If the command finds a segment missing more than once, further stack traces are suppressed.
+
+The last revision in the recovered journal is guaranteed to have a consistent head state.
+For the sake of speed, checkpoints are **not** checked.
+Moreover, since the consistency check stops as soon as it finds a consistent head state, older revisions in the recovered journal might still be inconsistent.
+For a deeper analysis of the consistency of the recovered journal, see the `check` command.
+
+The `recover-journal` command is not destructive and tries its best to leave the Segment Store folder in a consistent, usable state.
+Before creating a new journal, the old one is backed up in the Segment Store folder as `journal.log.bak.XXX`, where `XXX` is a monotonically increasing, three-digit number.
+Only after the backup of the old journal is successful, the command installs the recovered journal as the canonical `journal.log`.
+If any error occurs in the process, the command will roll the old journal back and discard the backup.

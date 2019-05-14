@@ -16,7 +16,6 @@
  */
 package org.apache.jackrabbit.oak.security.authentication;
 
-import javax.annotation.Nonnull;
 import javax.jcr.Credentials;
 import javax.jcr.SimpleCredentials;
 import javax.security.auth.callback.Callback;
@@ -25,11 +24,13 @@ import javax.security.auth.callback.PasswordCallback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 
 import org.apache.jackrabbit.oak.AbstractSecurityTest;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleMonitor;
 import org.apache.jackrabbit.oak.spi.security.authentication.callback.CredentialsCallback;
 import org.apache.jackrabbit.oak.spi.security.authentication.callback.RepositoryCallback;
 import org.apache.jackrabbit.oak.spi.security.authentication.callback.WhiteboardCallback;
 import org.apache.jackrabbit.oak.spi.whiteboard.DefaultWhiteboard;
 import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
+import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -51,8 +52,8 @@ public class CallbackHandlerImplTest extends AbstractSecurityTest {
         callbackHandler = create(simpleCreds);
     }
 
-    private CallbackHandlerImpl create(@Nonnull Credentials creds) {
-        return new CallbackHandlerImpl(creds, root.getContentSession().getWorkspaceName(), getContentRepository(), getSecurityProvider(), whiteboard);
+    private CallbackHandlerImpl create(@NotNull Credentials creds) {
+        return new CallbackHandlerImpl(creds, root.getContentSession().getWorkspaceName(), getContentRepository(), getSecurityProvider(), whiteboard, LoginModuleMonitor.NOOP);
     }
 
     @Test

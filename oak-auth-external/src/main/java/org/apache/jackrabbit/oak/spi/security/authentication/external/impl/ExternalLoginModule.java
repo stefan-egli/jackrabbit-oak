@@ -21,8 +21,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
 import javax.jcr.Credentials;
 import javax.jcr.RepositoryException;
 import javax.security.auth.Subject;
@@ -35,7 +33,7 @@ import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.commons.DebugTimer;
 import org.apache.jackrabbit.oak.namepath.NamePathMapper;
-import org.apache.jackrabbit.oak.plugins.value.ValueFactoryImpl;
+import org.apache.jackrabbit.oak.plugins.value.jcr.ValueFactoryImpl;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.authentication.AbstractLoginModule;
 import org.apache.jackrabbit.oak.spi.security.authentication.AuthInfoImpl;
@@ -56,6 +54,8 @@ import org.apache.jackrabbit.oak.spi.security.authentication.external.SyncResult
 import org.apache.jackrabbit.oak.spi.security.authentication.external.SyncedIdentity;
 import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
 import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUtils;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -246,12 +246,14 @@ public class ExternalLoginModule extends AbstractLoginModule {
             }
         } catch (ExternalIdentityException e) {
             log.error("Error while authenticating '{}' with {}", logId, idp.getName(), e);
+            onError();
             return false;
         } catch (LoginException e) {
             log.debug("IDP {} throws login exception for '{}': {}", idp.getName(), logId, e.getMessage());
             throw e;
-        } catch (Exception e) {
-            log.debug("SyncHandler {} throws sync exception for '{}'", syncHandler.getName(), logId, e);
+        } catch (SyncException | RepositoryException e) {
+            onError();
+            log.error("SyncHandler {} throws sync exception for '{}'", syncHandler.getName(), logId, e);
             LoginException le = new LoginException("Error while syncing user.");
             le.initCause(e);
             throw le;
@@ -259,7 +261,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
     }
 
     @Override
-    public boolean commit() throws LoginException {
+    public boolean commit() {
         if (externalUser == null) {
             // login attempt in this login module was not successful
             clearState();
@@ -283,7 +285,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
     }
 
     @Override
-    public boolean abort() throws LoginException {
+    public boolean abort() {
         clearState();
         // do we need to remove the user again, in case we created it during login() ?
         return true;
@@ -291,8 +293,8 @@ public class ExternalLoginModule extends AbstractLoginModule {
 
     //------------------------------------------------------------< private >---
 
-    @CheckForNull
-    private String getUserId(@CheckForNull PreAuthenticatedLogin preAuthLogin, @CheckForNull Credentials credentials) {
+    @Nullable
+    private String getUserId(@Nullable PreAuthenticatedLogin preAuthLogin, @Nullable Credentials credentials) {
         if (preAuthLogin != null) {
             return preAuthLogin.getUserId();
         } else if (credentials != null){
@@ -302,8 +304,8 @@ public class ExternalLoginModule extends AbstractLoginModule {
         }
     }
 
-    @CheckForNull
-    private SyncedIdentity getSyncedIdentity(@CheckForNull String userId) throws RepositoryException {
+    @Nullable
+    private SyncedIdentity getSyncedIdentity(@Nullable String userId) throws RepositoryException {
         UserManager userMgr = getUserManager();
         if (userId != null && userMgr != null) {
             return syncHandler.findIdentity(userMgr, userId);
@@ -312,7 +314,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
         }
     }
 
-    private boolean ignore(@CheckForNull SyncedIdentity syncedIdentity, @CheckForNull PreAuthenticatedLogin preAuthLogin) {
+    private boolean ignore(@Nullable SyncedIdentity syncedIdentity, @Nullable PreAuthenticatedLogin preAuthLogin) {
         if (syncedIdentity != null) {
             ExternalIdentityRef externalIdRef = syncedIdentity.getExternalIdRef();
             if (externalIdRef == null) {
@@ -336,7 +338,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
      * @param user the external user
      * @throws SyncException if an error occurs
      */
-    private void syncUser(@Nonnull ExternalUser user) throws SyncException {
+    private void syncUser(@NotNull ExternalUser user) throws SyncException {
         Root root = getRoot();
         if (root == null) {
             throw new SyncException("Cannot synchronize user. root == null");
@@ -376,7 +378,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
      * Initiates synchronization of a possible remove user
      * @param id the user id
      */
-    private void validateUser(@Nonnull String id) throws SyncException {
+    private void validateUser(@NotNull String id) throws SyncException {
         SyncContext context = null;
         try {
             Root root = getRoot();
@@ -404,18 +406,18 @@ public class ExternalLoginModule extends AbstractLoginModule {
 
     }
 
-    @Nonnull
-    private AuthInfo createAuthInfo(@Nonnull String userId, @Nonnull Set<? extends Principal> principals) {
+    @NotNull
+    private AuthInfo createAuthInfo(@NotNull String userId, @NotNull Set<? extends Principal> principals) {
         Credentials creds;
         if (credentials instanceof ImpersonationCredentials) {
             creds = ((ImpersonationCredentials) credentials).getBaseCredentials();
         } else {
             creds = credentials;
         }
-        Map<String, Object> attributes = new HashMap<String, Object>();
+        Map<String, Object> attributes = new HashMap<>();
         Object shared = sharedState.get(SHARED_KEY_ATTRIBUTES);
         if (shared instanceof Map) {
-            for (Map.Entry entry : ((Map<?,?>) shared).entrySet()) {
+            for (Map.Entry<?,?> entry : ((Map<?,?>) shared).entrySet()) {
                 attributes.put(entry.getKey().toString(), entry.getValue());
             }
         } else if (creds != null) {
@@ -424,7 +426,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
         return new AuthInfoImpl(userId, attributes, principals);
     }
 
-    private static void debug(@Nonnull String msg, String... args) {
+    private static void debug(@NotNull String msg, String... args) {
         if (log.isDebugEnabled()) {
             log.debug(msg, args);
         }
@@ -443,7 +445,7 @@ public class ExternalLoginModule extends AbstractLoginModule {
      * @return the set of credentials classes as exposed by the configured
      * {@link CredentialsSupport} implementation.
      */
-    @Nonnull
+    @NotNull
     @Override
     protected Set<Class> getSupportedCredentials() {
         return credentialsSupport.getCredentialClasses();
@@ -451,11 +453,11 @@ public class ExternalLoginModule extends AbstractLoginModule {
 
     //----------------------------------------------< public setters (JAAS) >---
 
-    public void setSyncManager(@Nonnull SyncManager syncManager) {
+    public void setSyncManager(@NotNull SyncManager syncManager) {
         this.syncManager = syncManager;
     }
 
-    public void setIdpManager(@Nonnull ExternalIdentityProviderManager idpManager) {
+    public void setIdpManager(@NotNull ExternalIdentityProviderManager idpManager) {
         this.idpManager = idpManager;
     }
 }

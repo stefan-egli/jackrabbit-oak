@@ -23,19 +23,22 @@ import java.io.File;
 import java.io.IOException;
 
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexCopier;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition;
-import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.IndexingMode;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexDefinition;
 import org.apache.jackrabbit.oak.plugins.index.lucene.TestUtil;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexEditorContext;
+import org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.stats.StatisticsProvider;
+import org.apache.lucene.document.Document;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import static com.google.common.util.concurrent.MoreExecutors.sameThreadExecutor;
-import static org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent.INITIAL_CONTENT;
+import static org.apache.jackrabbit.oak.InitialContentHelper.INITIAL_CONTENT;
+import static org.apache.jackrabbit.oak.plugins.index.lucene.FieldFactory.newPathField;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -56,17 +59,18 @@ public class NRTIndexFactoryTest {
     public void setUp() throws IOException {
         indexCopier = new IndexCopier(sameThreadExecutor(), temporaryFolder.getRoot());
         indexFactory = new NRTIndexFactory(indexCopier, StatisticsProvider.NOOP);
+        indexFactory.setAssertAllResourcesClosed(true);
     }
 
     @Test
     public void noIndexForAsync() throws Exception{
-        IndexDefinition idxDefn = new IndexDefinition(root, builder.getNodeState(), "/foo");
+        LuceneIndexDefinition idxDefn = new LuceneIndexDefinition(root, builder.getNodeState(), "/foo");
         assertNull(indexFactory.createIndex(idxDefn));
     }
 
     @Test
     public void indexCreationNRT() throws Exception{
-        IndexDefinition idxDefn = getIndexDefinition("/foo", IndexingMode.SYNC);
+        LuceneIndexDefinition idxDefn = getIndexDefinition("/foo", FulltextIndexConstants.IndexingMode.SYNC);
 
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         assertNotNull(idx1);
@@ -75,7 +79,7 @@ public class NRTIndexFactoryTest {
 
     @Test
     public void indexCreationSync() throws Exception{
-        IndexDefinition idxDefn = getNRTIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getNRTIndexDefinition("/foo");
 
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         assertNotNull(idx1);
@@ -84,7 +88,7 @@ public class NRTIndexFactoryTest {
 
     @Test
     public void indexCreationAndCloser() throws Exception{
-        IndexDefinition idxDefn = getNRTIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getNRTIndexDefinition("/foo");
 
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         assertNotNull(idx1);
@@ -119,8 +123,30 @@ public class NRTIndexFactoryTest {
     }
 
     @Test
+    public void indexCreationAndCloserWithUpdate() throws Exception{
+        LuceneIndexDefinition idxDefn = getNRTIndexDefinition("/foo");
+
+        Document d = new Document();
+        d.add(newPathField("/a/b"));
+
+        NRTIndex idx1 = indexFactory.createIndex(idxDefn);
+        idx1.getWriter().updateDocument("/a/b", d);
+        assertEquals(1, idx1.getReaders().size());
+
+        NRTIndex idx2 = indexFactory.createIndex(idxDefn);
+        idx2.getWriter().updateDocument("/a/b", d);
+        idx1.getWriter().updateDocument("/a/b", d);
+        assertEquals(2, idx2.getReaders().size());
+
+        NRTIndex idx3 = indexFactory.createIndex(idxDefn);
+        NRTIndex idx4 = indexFactory.createIndex(idxDefn);
+        assertTrue(idx1.isClosed());
+    }
+
+
+    @Test
     public void closeIndexOnClose() throws Exception{
-        IndexDefinition idxDefn = getNRTIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getNRTIndexDefinition("/foo");
 
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         NRTIndex idx2 = indexFactory.createIndex(idxDefn);
@@ -132,13 +158,13 @@ public class NRTIndexFactoryTest {
         assertTrue(idx2.isClosed());
     }
 
-    private IndexDefinition getNRTIndexDefinition(String indexPath) {
-       return getIndexDefinition(indexPath, IndexingMode.NRT);
+    private LuceneIndexDefinition getNRTIndexDefinition(String indexPath) {
+       return getIndexDefinition(indexPath, FulltextIndexConstants.IndexingMode.NRT);
     }
 
-    private IndexDefinition getIndexDefinition(String indexPath, IndexingMode indexingMode) {
+    private LuceneIndexDefinition getIndexDefinition(String indexPath, FulltextIndexConstants.IndexingMode indexingMode) {
         TestUtil.enableIndexingMode(builder, indexingMode);
-
-        return new IndexDefinition(root, builder.getNodeState(), indexPath);
+        LuceneIndexEditorContext.configureUniqueId(builder);
+        return new LuceneIndexDefinition(root, builder.getNodeState(), indexPath);
     }
 }

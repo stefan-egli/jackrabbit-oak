@@ -49,7 +49,7 @@ be applied to the repository without taking effect.
 effect upon being persisted, i.e. access to items located in a restricted are
 will be subject to the permission evaluation associated with the authorization model.
 
-<a name="jackrabbit_api"/>
+<a name="jackrabbit_api"></a>
 ### Jackrabbit API
 
 The Jackrabbit API defines an extension of the JCR [AccessControlPolicy] interface 
@@ -61,7 +61,7 @@ intended to grant the ability to perform certain actions to a set of
 See [Jackrabbit API](http://svn.apache.org/repos/asf/jackrabbit/trunk/jackrabbit-api/src/main/java/org/apache/jackrabbit/api/security/authorization/PrincipalSetPolicy.java) 
 for details and the methods exposed by the interface.
 
-<a name="api_extensions"/>
+<a name="api_extensions"></a>
 ### API Extensions
 
 The module comes with the following extension in the 
@@ -100,7 +100,7 @@ allows to excluded principals by their names at runtime.
 
 See also section [Pluggability](#pluggability) below.                            
 
-<a name="details"/>
+<a name="details"></a>
 ### Implementation Details
 
 #### Access Control Management
@@ -164,6 +164,12 @@ node (access control content) is consequently delegated to other
 authorization modules. In case there was no module dealing with these permissions, 
 access will be denied (see in section _Combining Multiple Authorization Models_ for [details](composite.html#details)). 
 
+#### Permission Evaluation with Multiplexed Stores
+
+The CUG authorization module is not designed to be used in combination with non-default mounts. If any of the configured 
+supported paths (see below) is found to be an ancestor of any non-default mount or included therein the activation/modification 
+of the `CugConfiguration` will fail with immediately and log an error.
+
 ### Representation in the Repository
 
 CUG policies defined by this module in a dedicate node name `rep:cugPolicy` of 
@@ -183,7 +189,7 @@ _Note:_ the multivalued `rep:principalNames` property reflects the fact
 that CUGs are intended to be used for small principal sets, preferably 
 `java.security.acl.Group` principals. 
 
-<a name="validation"/>
+<a name="validation"></a>
 ### Validation
 
 The consistency of this content structure both on creation and modification is
@@ -197,7 +203,7 @@ all of type `AccessControl` with the following codes:
 | 0022              | Access controlled not not of mixin 'rep:CugMixin'        |
 | 0023              | Wrong name of node with primary type 'rep:CugPolicy'     |
 
-<a name="configuration"/>
+<a name="configuration"></a>
 ### Configuration
 
 The CUG authorization extension is an optional feature that requires mandatory
@@ -233,11 +239,11 @@ to be excluded from the evaluation of restricted areas:
 | `principalNames`            | Set\<String\>  | \-       | Name of principals that are always excluded from CUG evaluation.  |
 | | | | |
 
-_Note:_ this is an optional feature to extend the [default](/oak/docs/apidocs/org/apache/jackrabbit/oak/spi/security/authorization/cug/CugExclude.Default.html) 
+_Note:_ This implementation extends the [default](/oak/docs/apidocs/org/apache/jackrabbit/oak/spi/security/authorization/cug/CugExclude.Default.html) 
 exclusion list. Alternatively, it is possible to plug a custom `CugExclude` implementation matching 
 specific needs (see [below](#pluggability)).
 
-<a name="pluggability"/>
+<a name="pluggability"></a>
 ### Pluggability
 
 The following section describes how to deploy the CUG authorization model into
@@ -276,18 +282,27 @@ unit tests for an alternative approach.
      CugConfiguration cug = new CugConfiguration();
      cug.setParameters(params);
      
-     // bind it to the security provider (simplified => subclassing required due to protected access)
-     SecurityProviderImpl securityProvider = new SecurityProviderImpl();
-     securityProvider.bindAuthorizationConfiguration(cug);
+     // bind it to the security provider
+     SecurityProvider securityProvider = SecurityProviderBuilder.newBuilder().with(configuration).build();
+     
+     CompositeConfiguration<AuthorizationConfiguration> composite = (CompositeConfiguration) securityProvider
+           .getConfiguration(AuthorizationConfiguration.class);
+     AuthorizationConfiguration defConfig = composite.getDefaultConfig();
+     
+     cug.setSecurityProvider(securityProvider);
+     cug.setRootProvider(((ConfigurationBase) defConfig).getRootProvider());
+     cug.setTreeProvider(((ConfigurationBase) defConfig).getTreeProvider());
+     composite.addConfiguration(cug);
+     composite.addConfiguration(defConfig);
      
      // create the Oak repository (alternatively: create the JCR repository)
      Oak oak = new Oak()
              .with(new InitialContent())
              // TODO: add all required editors
              .with(securityProvider);
-             withEditors(oak);     
-     ContentRepository contentRepository = oak.createContentRepository();     
-     
+             withEditors(oak);
+     ContentRepository contentRepository = oak.createContentRepository();
+
 #### Customize CugExclude
  
 The following steps are required in order to customize the `CugExclude` implementation
@@ -296,7 +311,8 @@ in the `org.apache.jackrabbit.oak.spi.security.authorization.cug.impl.CugConfigu
 
 1. implement `CugExclude` interface according to you needs,
 2. make your implementation an OSGi service
-3. deploy the bundle containing your implementation in the OSGi container and activate the service.
+3. deploy the bundle containing your implementation in the OSGi container and activate the service. 
+4. make sure the default CUGExclude service is properly replaced by the custom implementation.
 
 ###### Example
 

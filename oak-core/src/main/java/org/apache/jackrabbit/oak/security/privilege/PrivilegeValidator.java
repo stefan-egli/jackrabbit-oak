@@ -19,16 +19,14 @@ package org.apache.jackrabbit.oak.security.privilege;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nonnull;
-
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
-import org.apache.jackrabbit.oak.plugins.tree.impl.ImmutableTree;
-import org.apache.jackrabbit.oak.plugins.name.NamespaceConstants;
+import org.apache.jackrabbit.oak.plugins.tree.TreeProvider;
 import org.apache.jackrabbit.oak.spi.commit.DefaultValidator;
 import org.apache.jackrabbit.oak.spi.commit.Validator;
+import org.apache.jackrabbit.oak.spi.namespace.NamespaceConstants;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeBits;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeBitsProvider;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
@@ -37,6 +35,7 @@ import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeUtil;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStateUtils;
 import org.apache.jackrabbit.util.Text;
+import org.jetbrains.annotations.NotNull;
 
 import static org.apache.jackrabbit.oak.api.CommitFailedException.CONSTRAINT;
 
@@ -49,16 +48,18 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
     private final Root rootBefore;
     private final Root rootAfter;
     private final PrivilegeBitsProvider bitsProvider;
+    private final TreeProvider treeProvider;
 
-    PrivilegeValidator(Root before, Root after) {
+    PrivilegeValidator(@NotNull Root before, @NotNull Root after, @NotNull TreeProvider treeProvider) {
         rootBefore = before;
         rootAfter = after;
         bitsProvider = new PrivilegeBitsProvider(rootBefore);
+        this.treeProvider = treeProvider;
     }
 
     //----------------------------------------------------------< Validator >---
     @Override
-    public void propertyAdded(PropertyState after) throws CommitFailedException {
+    public void propertyAdded(PropertyState after) {
         // no-op
     }
 
@@ -80,7 +81,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
     public Validator childNodeAdded(String name, NodeState after) throws CommitFailedException {
         if (isPrivilegeDefinition(after)) {
             // make sure privileges have been initialized before
-            getPrivilegesTree(rootBefore);
+            Tree parent = getPrivilegesTree(rootBefore);
 
             // the following characteristics are expected to be validated elsewhere:
             // - permission to allow privilege registration -> permission validator.
@@ -94,7 +95,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
             }
 
             // validate the definition
-            Tree tree = new ImmutableTree(ImmutableTree.ParentProvider.UNSUPPORTED, name, after);
+            Tree tree = treeProvider.createReadOnlyTree(parent, name, after);
             validateDefinition(tree);
         }
 
@@ -131,7 +132,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
         }
     }
 
-    @Nonnull
+    @NotNull
     private Tree getPrivilegesTree(Root root) throws CommitFailedException {
         Tree privilegesTree = root.getTree(PRIVILEGES_PATH);
         if (!privilegesTree.exists()) {
@@ -207,7 +208,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
             }
         }
 
-        PrivilegeBits aggrBits = bitsProvider.getBits(declaredNames.toArray(new String[declaredNames.size()]));
+        PrivilegeBits aggrBits = bitsProvider.getBits(declaredNames.toArray(new String[0]));
         if (!newBits.equals(aggrBits)) {
             throw new CommitFailedException(CONSTRAINT, 53, "Invalid privilege bits for aggregated privilege definition.");
         }
@@ -237,7 +238,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
     }
 
     private static Set<String> resolveAggregates(Set<String> declared, Map<String, PrivilegeDefinition> definitions) throws CommitFailedException {
-        Set<String> aggregateNames = new HashSet<String>();
+        Set<String> aggregateNames = new HashSet<>();
         for (String name : declared) {
             PrivilegeDefinition d = definitions.get(name);
             if (d == null) {
@@ -254,7 +255,7 @@ class PrivilegeValidator extends DefaultValidator implements PrivilegeConstants 
         return aggregateNames;
     }
 
-    private static boolean isPrivilegeDefinition(@Nonnull NodeState state) {
+    private static boolean isPrivilegeDefinition(@NotNull NodeState state) {
         return NT_REP_PRIVILEGE.equals(NodeStateUtils.getPrimaryTypeName(state));
     }
 }

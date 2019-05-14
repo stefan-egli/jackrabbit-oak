@@ -16,16 +16,16 @@ package org.apache.jackrabbit.oak.query;
 import java.util.Iterator;
 import java.util.List;
 
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
-import aQute.bnd.annotation.ProviderType;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.osgi.annotation.versioning.ProviderType;
 
 import org.apache.jackrabbit.oak.api.PropertyValue;
 import org.apache.jackrabbit.oak.api.Result;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.query.ast.ColumnImpl;
 import org.apache.jackrabbit.oak.query.ast.OrderingImpl;
+import org.apache.jackrabbit.oak.query.stats.QueryStatsData.QueryExecutionStats;
 
 /**
  * A "select" or "union" query.
@@ -138,7 +138,7 @@ public interface Query {
      * @return {@code this} if no conversions are possible or a new instance of
      *         a {@link Query}. Cannot return null.
      */
-    @Nonnull
+    @NotNull
     Query buildAlternativeQuery();
     
     /**
@@ -206,5 +206,7 @@ public interface Query {
      *             fail in this case
      */
     void verifyNotPotentiallySlow();
+    
+    QueryExecutionStats getQueryExecutionStats();
 
 }

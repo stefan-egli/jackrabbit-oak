@@ -39,6 +39,8 @@
             * [Cluster Setup](#nrt-indexing-cluster-setup)
             * [Configuration](#nrt-indexing-config)
     * [Reindexing](#reindexing)            
+        * [Reducing reindexing times](#reduce-reindexing-times)            
+        * [How to Abort Reindexing](#abort-reindex)            
   
 ## <a name="overview"></a> Overview
   
@@ -148,17 +150,20 @@ At time of execution, the job performs its work:
    If no such state exists, or no such checkpoint is present, 
    then it treats it as initial indexing, in which case the base state is empty. 
    This state is considered the `before` state.
-2. Create a checkpoint for _current_ state and refer to this as `after` state.
-3. Create an `IndexUpdate` instance bound to the current _indexing lane_, 
+2. Check if there has been any change in repository from the `before` state. 
+   If no change is detected then current indexing cycle is considered completed and
+   `IndexStatsMBean#done` time is set to current time. `LastIndexedTime` is not updated
+3. Create a checkpoint for _current_ state and refer to this as `after` state.
+4. Create an `IndexUpdate` instance bound to the current _indexing lane_, 
    and trigger a diff between the `before` and the `after` state.
-4. `IndexUpdate` will then pick up index definitions that are bound to the current indexing lane, 
+5. `IndexUpdate` will then pick up index definitions that are bound to the current indexing lane, 
    will create `IndexEditor` instances for them, 
    and pass them the diff callbacks.
-5. The diff traverses in a depth-first manner, 
+6. The diff traverses in a depth-first manner, 
    and at the end of diff, the `IndexEditor` will do final changes for the current indexing run. 
    Depending on the index implementation, the index data can be either stored in the NodeStore itself
    (for indexes of type `lucene`, `property`, and so on), or in any remote store (for type `solr`).
-6. `AsyncIndexUpdate` will then update the last indexed checkpoint to the current checkpoint 
+7. `AsyncIndexUpdate` will then update the last indexed checkpoint to the current checkpoint 
    and do a commit. 
 
 Such async indexes are _eventually consistent_ with the repository state, 
@@ -475,13 +480,30 @@ Reindexing of existing indexes is required in the following scenarios:
   in combination with a large transaction (a commit that changed or added many thousand nodes),
   and if one of the parent nodes had more than 100 child nodes,
   then indexes (all types) [did not see those changes in some cases][OAK-5557].
+* G: Prior to Oak 1.4.7, when repository sidegrade was used to do _partial_ migrations,
+  that is migrating data without migrating related indexes.
+  In this case, the property indexes need to be either fully rebuilt,
+  or (as an alternative) copy or migrate the content again using a newer version of Oak.
+  See also [OAK-4684][OAK-4684].
+* H: If a binary is missing after reindexing.
+  This can happen in the following case:
+  When reindexing or creating a new index takes multiple days, 
+  and during that time, after one day or later, datastore garbage collection was run concurrently.
+  Some binaries created during by reindexing can get missing because 
+  datastore garbage collection removes unreferenced binaries older than one day.
+  Indexing or reindexing using oak-run is not affected by this. 
+* I: Prior to Oak 1.0.27 / 1.2.11, 
+  if an index file gets larger than 2 GB, then possibly the index can not be opened
+  (exception "Invalid seek request"), and subsequently the index might get corrupt.
+  See also [OAK-3911][OAK-3911].
 
-To reindex, set the `reindex` property to `true` in the respective index definition:
+New indexes are built automatically once the index definition is stored.
+To reindex an _existing_ index (when needed), set the `reindex` property to `true` in the respective index definition:
 
     /oak:index/userIndex
       - reindex = true
       
-Once changes are saved, the index is reindexed. 
+Once changes are saved, the index is reindexed.
 For asynchronous indexes, reindex starts with the next async indexing cycle.
 For synchronous indexes, the reindexing is done as part of save (or commit) itself.
 For a (synchronous) property index, 
@@ -494,15 +516,39 @@ Once reindexing starts, the following log entries can be seen in the log:
     [async-index-update-async] o.a.j.o.p.i.IndexUpdate Reindexing Traversed #100000 /home/user/admin 
     [async-index-update-async] o.a.j.o.p.i.AsyncIndexUpdate [async] Reindexing completed for indexes: [/oak:index/userIndex*(4407016)] in 30 min 
 
-Once reindexing is complete, the `reindex` flag is set to `false`.
+Once reindexing is complete, the `reindex` flag is set to `false` automatically.
 
+### <a name="reduce-reindexing-times"></a> Reducing Reindexing Times
 
-[OAK-5159]: https://issues.apache.org/jira/browse/OAK-5159
-[OAK-4939]: https://issues.apache.org/jira/browse/OAK-4939
-[OAK-4808]: https://issues.apache.org/jira/browse/OAK-4808
-[OAK-4412]: https://issues.apache.org/jira/browse/OAK-4412
+If the index being reindexed has full text extraction configured then reindexing can take long time as most of the 
+time is spent in text extraction. 
+For such cases its recommended to use text [pre-extraction support](pre-extract-text.html).
+The text pre-extraction can be done before starting the actual reindexing. This would then ensure that during reindexing
+time is not spent in performing text extraction and hence the actual time taken for reindexing such an index gets reduced
+considerably.
+
+### <a name="abort-reindex"></a> How to Abort Reindexing
+
+Building an index can be slow. It can be aborted (stopped before it is finished),
+for example if you detect there is an error in the index definition.
+Reindexing and building a new index can be aborted 
+when using asynchronous indexes.
+For synchronous indexes, it can be stopped if it was started using the `PropertyIndexAsyncReindexMBean`.
+To do this, use the respective `IndexStats` JMX bean 
+(for example, `async`, `fulltext-async`, or `async-reindex`), 
+and call the operation `abortAndPause()`.
+Then, either set the `reindex` flag to `false` (for an existing index), 
+remove the index definition (for a new index),
+or change the index type to `disabled`. Store the change. Finally, call the operation `resume()`
+so that regular indexing operations can continue.
+
+[OAK-3911]: https://issues.apache.org/jira/browse/OAK-3911
 [OAK-4065]: https://issues.apache.org/jira/browse/OAK-4065
+[OAK-4412]: https://issues.apache.org/jira/browse/OAK-4412
+[OAK-4684]: https://issues.apache.org/jira/browse/OAK-4684
+[OAK-4808]: https://issues.apache.org/jira/browse/OAK-4808
+[OAK-4939]: https://issues.apache.org/jira/browse/OAK-4939
 [OAK-5159]: https://issues.apache.org/jira/browse/OAK-5159
 [OAK-5557]: https://issues.apache.org/jira/browse/OAK-5557
-  
+
   

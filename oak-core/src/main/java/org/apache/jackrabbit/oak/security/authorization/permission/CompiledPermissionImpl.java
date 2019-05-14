@@ -17,43 +17,40 @@
 package org.apache.jackrabbit.oak.security.authorization.permission;
 
 import java.security.Principal;
-import java.security.acl.Group;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterators;
 import org.apache.jackrabbit.JcrConstants;
 import org.apache.jackrabbit.commons.iterator.AbstractLazyIterator;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.commons.PathUtils;
+import org.apache.jackrabbit.oak.namepath.NamePathMapper;
 import org.apache.jackrabbit.oak.plugins.tree.TreeType;
 import org.apache.jackrabbit.oak.plugins.tree.TreeTypeProvider;
-import org.apache.jackrabbit.oak.namepath.NamePathMapper;
-import org.apache.jackrabbit.oak.plugins.tree.impl.ImmutableTree;
 import org.apache.jackrabbit.oak.plugins.version.ReadOnlyVersionManager;
+import org.apache.jackrabbit.oak.security.authorization.ProviderCtx;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.Context;
+import org.apache.jackrabbit.oak.spi.security.authorization.accesscontrol.AccessControlConstants;
 import org.apache.jackrabbit.oak.spi.security.authorization.permission.PermissionConstants;
 import org.apache.jackrabbit.oak.spi.security.authorization.permission.Permissions;
 import org.apache.jackrabbit.oak.spi.security.authorization.permission.RepositoryPermission;
 import org.apache.jackrabbit.oak.spi.security.authorization.permission.TreePermission;
-import org.apache.jackrabbit.oak.spi.security.authorization.restriction.RestrictionProvider;
+import org.apache.jackrabbit.oak.spi.security.principal.GroupPrincipals;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeBits;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeBitsProvider;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
-
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,22 +70,27 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
 
     private final String workspaceName;
     private final ReadPolicy readPolicy;
-    private final PermissionStoreImpl store;
+    private final PermissionStore store;
     private final PermissionEntryProvider userStore;
     private final PermissionEntryProvider groupStore;
+
     private final TreeTypeProvider typeProvider;
+    private final ProviderCtx providerCtx;
 
     private Root root;
     private ReadOnlyVersionManager versionManager;
     private PrivilegeBitsProvider bitsProvider;
 
-    private CompiledPermissionImpl(@Nonnull Set<Principal> principals,
-                                   @Nonnull Root root, @Nonnull String workspaceName,
-                                   @Nonnull RestrictionProvider restrictionProvider,
-                                   @Nonnull ConfigurationParameters options,
-                                   @Nonnull Context ctx) {
+    private CompiledPermissionImpl(@NotNull Set<Principal> principals,
+                                   @NotNull Root root,
+                                   @NotNull String workspaceName,
+                                   @NotNull PermissionStore store,
+                                   @NotNull ConfigurationParameters options,
+                                   @NotNull Context ctx,
+                                   @NotNull ProviderCtx providerCtx) {
         this.root = root;
         this.workspaceName = workspaceName;
+        this.providerCtx = providerCtx;
 
         bitsProvider = new PrivilegeBitsProvider(root);
 
@@ -96,75 +98,90 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         readPolicy = (readPaths.isEmpty()) ? EmptyReadPolicy.INSTANCE : new DefaultReadPolicy(readPaths);
 
         // setup
-        store = new PermissionStoreImpl(root, workspaceName, restrictionProvider);
-        Set<String> userNames = new HashSet<String>(principals.size());
-        Set<String> groupNames = new HashSet<String>(principals.size());
+        this.store = store;
+        Set<String> userNames = new HashSet<>(principals.size());
+        Set<String> groupNames = new HashSet<>(principals.size());
         for (Principal principal : principals) {
-            if (principal instanceof Group) {
+            if (GroupPrincipals.isGroup(principal)) {
                 groupNames.add(principal.getName());
             } else {
                 userNames.add(principal.getName());
             }
         }
 
-        PermissionEntryCache cache = new PermissionEntryCache();
-        userStore = new PermissionEntryProviderImpl(store, cache, userNames, options);
-        groupStore = new PermissionEntryProviderImpl(store, cache, groupNames, options);
+        if (!userNames.isEmpty()) {
+            userStore = new PermissionEntryProviderImpl(store, userNames, options);
+        } else {
+            userStore = null;
+        }
+        if (!groupNames.isEmpty()) {
+            groupStore = new PermissionEntryProviderImpl(store, groupNames, options);
+        } else {
+            groupStore = null;
+        }
 
         typeProvider = new TreeTypeProvider(ctx);
     }
 
-    static CompiledPermissions create(@Nonnull Root root, @Nonnull String workspaceName,
-                                      @Nonnull Set<Principal> principals,
-                                      @Nonnull RestrictionProvider restrictionProvider,
-                                      @Nonnull ConfigurationParameters options,
-                                      @Nonnull Context ctx) {
+    static CompiledPermissions create(@NotNull Root root,
+                                      @NotNull String workspaceName,
+                                      @NotNull PermissionStore store,
+                                      @NotNull Set<Principal> principals,
+                                      @NotNull ConfigurationParameters options,
+                                      @NotNull Context ctx,
+                                      @NotNull ProviderCtx providerCtx) {
         Tree permissionsTree = PermissionUtil.getPermissionsRoot(root, workspaceName);
         if (!permissionsTree.exists() || principals.isEmpty()) {
             return NoPermissions.getInstance();
         } else {
-            return new CompiledPermissionImpl(principals, root, workspaceName, restrictionProvider, options, ctx);
+            return new CompiledPermissionImpl(principals, root, workspaceName, store, options, ctx, providerCtx);
         }
     }
 
     //------------------------------------------------< CompiledPermissions >---
     @Override
-    public void refresh(@Nonnull Root root, @Nonnull String workspaceName) {
+    public void refresh(@NotNull Root root, @NotNull String workspaceName) {
         this.root = root;
         this.bitsProvider = new PrivilegeBitsProvider(root);
         this.versionManager = null;
 
         store.flush(root);
-        userStore.flush();
-        groupStore.flush();
+        if (userStore != null) {
+            userStore.flush();
+        }
+        if (groupStore != null) {
+            groupStore.flush();
+        }
     }
 
-    @Nonnull
+    @NotNull
     @Override
     public RepositoryPermission getRepositoryPermission() {
         return new RepositoryPermission() {
             @Override
             public boolean isGranted(long repositoryPermissions) {
-                EntryPredicate predicate = new EntryPredicate();
+                EntryPredicate predicate = EntryPredicate.create();
                 return hasPermissions(getEntryIterator(predicate), predicate, repositoryPermissions, null);
             }
         };
     }
 
-    @Nonnull
+    @NotNull
     @Override
-    public TreePermission getTreePermission(@Nonnull Tree tree, @Nonnull TreePermission parentPermission) {
+    public TreePermission getTreePermission(@NotNull Tree tree, @NotNull TreePermission parentPermission) {
         return getTreePermission(tree, typeProvider.getType(tree, getParentType(parentPermission)), parentPermission);
     }
 
-    @Nonnull
+    @NotNull
     @Override
-    public TreePermission getTreePermission(@Nonnull Tree tree, @Nonnull TreeType type, @Nonnull TreePermission parentPermission) {
+    public TreePermission getTreePermission(@NotNull Tree tree, @NotNull TreeType type, @NotNull TreePermission parentPermission) {
         if (tree.isRoot()) {
             return createRootPermission(tree);
         }
         if (parentPermission instanceof VersionTreePermission) {
             return ((VersionTreePermission) parentPermission).createChildPermission(tree);
+        } else if (parentPermission instanceof RepoPolicyTreePermission) {
+            return ((RepoPolicyTreePermission)parentPermission).getChildPermission();
         }
         switch (type) {
             case HIDDEN:
@@ -178,45 +195,50 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
                         log.warn("Cannot retrieve versionable node for " + tree.getPath());
                         return EMPTY;
                     } else {
-                        /**
+                        /*
                          * NOTE: may return wrong results in case of restrictions
                          * that would match the path of the versionable node
                          * (or item in the subtree) but that item no longer exists
                          * -> evaluation by path might be more accurate (-> see #isGranted)
                          */
-                        while (!versionableTree.exists()) {
-                            versionableTree = versionableTree.getParent();
-                        }
-                        return new VersionTreePermission(tree, buildVersionDelegatee(versionableTree));
+                        return new VersionTreePermission(tree, buildVersionDelegatee(versionableTree), providerCtx.getTreeProvider());
                     }
                 }
+            case ACCESS_CONTROL:
+                if (AccessControlConstants.REP_REPO_POLICY.equals(tree.getName())) {
+                     return new RepoPolicyTreePermission(getRepositoryPermission());
+                } else {
+                     return new TreePermissionImpl(tree, type, parentPermission);
+                }
             case INTERNAL:
-                return EMPTY;
+                return InternalTreePermission.INSTANCE;
             default:
                 return new TreePermissionImpl(tree, type, parentPermission);
         }
     }
 
-    @Nonnull
-    private TreePermission buildVersionDelegatee(@Nonnull Tree versionableTree) {
-        if (!versionableTree.exists()) {
-            return TreePermission.EMPTY;
-        } else if (versionableTree.isRoot()) {
+    @NotNull
+    private TreePermission buildVersionDelegatee(@NotNull Tree versionableTree) {
+        while (!versionableTree.exists()) {
+            versionableTree = versionableTree.getParent();
+        }
+        if (versionableTree.isRoot()) {
             return createRootPermission(versionableTree);
         }
+
         TreeType type = typeProvider.getType(versionableTree);
         switch (type) {
             case HIDDEN : return ALL;
-            case INTERNAL : return EMPTY;
+            case INTERNAL : return InternalTreePermission.INSTANCE;
             // case VERSION is never expected here
             default:
                 return new TreePermissionImpl(versionableTree, type, buildParentPermission(versionableTree));
         }
     }
 
-    @Nonnull
-    private TreePermission buildParentPermission(@Nonnull Tree tree) {
-        List<Tree> trees = new ArrayList<Tree>();
+    @NotNull
+    private TreePermission buildParentPermission(@NotNull Tree tree) {
+        List<Tree> trees = new ArrayList<>();
         while (!tree.isRoot()) {
             tree = tree.getParent();
             trees.add(0, tree);
@@ -231,7 +253,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
     }
 
     @Override
-    public boolean isGranted(@Nonnull Tree tree, @Nullable PropertyState property, long permissions) {
+    public boolean isGranted(@NotNull Tree tree, @Nullable PropertyState property, long permissions) {
         TreeType type = typeProvider.getType(tree);
         switch (type) {
             case HIDDEN:
@@ -261,31 +283,31 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
     }
 
     @Override
-    public boolean isGranted(@Nonnull String path, long permissions) {
-        EntryPredicate predicate = new EntryPredicate(path, Permissions.respectParentPermissions(permissions));
+    public boolean isGranted(@NotNull String path, long permissions) {
+        EntryPredicate predicate = EntryPredicate.create(path, Permissions.respectParentPermissions(permissions));
         return hasPermissions(getEntryIterator(predicate), predicate, permissions, path);
     }
 
-    @Nonnull
+    @NotNull
     @Override
     public Set<String> getPrivileges(@Nullable Tree tree) {
         return bitsProvider.getPrivilegeNames(internalGetPrivileges(tree));
     }
 
     @Override
-    public boolean hasPrivileges(@Nullable Tree tree, @Nonnull String... privilegeNames) {
+    public boolean hasPrivileges(@Nullable Tree tree, @NotNull String... privilegeNames) {
         return internalGetPrivileges(tree).includes(bitsProvider.getBits(privilegeNames));
     }
 
     //------------------------------------------------------------< private >---
 
-    private boolean internalIsGranted(@Nonnull Tree tree, @Nullable PropertyState property, long permissions) {
-        EntryPredicate predicate = new EntryPredicate(tree, property, Permissions.respectParentPermissions(permissions));
+    private boolean internalIsGranted(@NotNull Tree tree, @Nullable PropertyState property, long permissions) {
+        EntryPredicate predicate = EntryPredicate.create(tree, property, Permissions.respectParentPermissions(permissions));
         return hasPermissions(getEntryIterator(predicate), predicate, permissions, tree.getPath());
     }
 
-    private boolean hasPermissions(@Nonnull Iterator<PermissionEntry> entries,
-                                   @Nonnull EntryPredicate predicate,
+    private boolean hasPermissions(@NotNull Iterator<PermissionEntry> entries,
+                                   @NotNull EntryPredicate predicate,
                                    long permissions, @Nullable String path) {
         // calculate readable paths if the given permissions includes any read permission.
         boolean isReadable = Permissions.diff(Permissions.READ, permissions) != Permissions.READ && readPolicy.isReadablePath(path, false);
@@ -354,7 +376,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         return (allows | ~permissions) == -1;
     }
 
-    @Nonnull
+    @NotNull
     private PrivilegeBits internalGetPrivileges(@Nullable Tree tree) {
         TreeType type = (tree == null) ? TreeType.DEFAULT : typeProvider.getType(tree);
         switch (type) {
@@ -375,11 +397,11 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
     }
 
-    @Nonnull
+    @NotNull
     private PrivilegeBits getPrivilegeBits(@Nullable Tree tree) {
         EntryPredicate pred = (tree == null)
-                ? new EntryPredicate()
-                : new EntryPredicate(tree, null, false);
+                ? EntryPredicate.create()
+                : EntryPredicate.create(tree, null, false);
         Iterator<PermissionEntry> entries = getEntryIterator(pred);
 
         PrivilegeBits allowBits = PrivilegeBits.getInstance();
@@ -401,15 +423,23 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         return allowBits;
     }
 
-    @Nonnull
-    private Iterator<PermissionEntry> getEntryIterator(@Nonnull EntryPredicate predicate) {
-        Iterator<PermissionEntry> userEntries = userStore.getEntryIterator(predicate);
-        Iterator<PermissionEntry> groupEntries = groupStore.getEntryIterator(predicate);
-        return concat(userEntries, groupEntries);
+    @NotNull
+    private Iterator<PermissionEntry> getEntryIterator(@NotNull EntryPredicate predicate) {
+        if (userStore != null && groupStore != null) {
+            Iterator<PermissionEntry> userEntries = userStore.getEntryIterator(predicate);
+            Iterator<PermissionEntry> groupEntries = groupStore.getEntryIterator(predicate);
+            return concat(userEntries, groupEntries);
+        } else if (userStore != null) {
+            return userStore.getEntryIterator(predicate);
+        } else if (groupStore != null) {
+            return groupStore.getEntryIterator(predicate);
+        } else {
+            return Collections.emptyIterator();
+        }
     }
 
-    @CheckForNull
-    private Tree getEvaluationTree(@Nonnull Tree versionStoreTree) {
+    @Nullable
+    private Tree getEvaluationTree(@NotNull Tree versionStoreTree) {
         if (ReadOnlyVersionManager.isVersionStoreTree(versionStoreTree)) {
             return versionStoreTree;
         } else {
@@ -417,7 +447,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
     }
 
-    @Nonnull
+    @NotNull
     private ReadOnlyVersionManager getVersionManager() {
         if (versionManager == null) {
             versionManager = ReadOnlyVersionManager.getInstance(root, NamePathMapper.DEFAULT);
@@ -425,19 +455,23 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         return versionManager;
     }
 
-    private static TreeType getParentType(@Nonnull TreePermission parentPermission) {
+    private static TreeType getParentType(@NotNull TreePermission parentPermission) {
         if (parentPermission instanceof TreePermissionImpl) {
             return ((TreePermissionImpl) parentPermission).type;
         } else if (parentPermission == TreePermission.EMPTY) {
             return TreeType.DEFAULT;
+        } else if (parentPermission == InternalTreePermission.INSTANCE) {
+            return TreeType.INTERNAL;
         } else if (parentPermission instanceof VersionTreePermission) {
             return TreeType.VERSION;
+        } else if (parentPermission instanceof RepoPolicyTreePermission) {
+            return TreeType.ACCESS_CONTROL;
         } else {
             throw new IllegalArgumentException("Illegal TreePermission implementation.");
         }
     }
 
-    private TreePermissionImpl createRootPermission(@Nonnull Tree rootTree) {
+    private TreePermissionImpl createRootPermission(@NotNull Tree rootTree) {
         return new TreePermissionImpl(rootTree, TreeType.DEFAULT, EMPTY);
     }
 
@@ -467,10 +501,10 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
 
         //-------------------------------------------------< TreePermission >---
-        @Nonnull
+        @NotNull
         @Override
-        public TreePermission getChildPermission(@Nonnull String childName, @Nonnull NodeState childState) {
-            Tree childTree = new ImmutableTree((ImmutableTree) tree, childName, childState);
+        public TreePermission getChildPermission(@NotNull String childName, @NotNull NodeState childState) {
+            Tree childTree = providerCtx.getTreeProvider().createReadOnlyTree(tree, childName, childState);
             return getTreePermission(childTree, typeProvider.getType(childTree, type), this);
         }
 
@@ -502,7 +536,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
 
         @Override
-        public boolean canRead(@Nonnull PropertyState property) {
+        public boolean canRead(@NotNull PropertyState property) {
             boolean isAcTree = isAcTree();
             if (!isAcTree && isReadableTree) {
                 return true;
@@ -516,7 +550,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
             while (it.hasNext()) {
                 PermissionEntry entry = it.next();
                 if (entry.privilegeBits.includes(READ_BITS.get(permission))) {
-                    return (entry.isAllow);
+                    return entry.isAllow;
                 }
             }
             return false;
@@ -534,34 +568,46 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
 
         @Override
         public boolean isGranted(long permissions) {
-            EntryPredicate predicate = new EntryPredicate(tree, null, Permissions.respectParentPermissions(permissions));
-            Iterator<PermissionEntry> it = concat(new LazyIterator(this, true, predicate), new LazyIterator(this, false, predicate));
+            EntryPredicate predicate = EntryPredicate.create(tree, null, Permissions.respectParentPermissions(permissions));
+            Iterator<PermissionEntry> it = getIterator(predicate);
             return hasPermissions(it, predicate, permissions, tree.getPath());
         }
 
         @Override
-        public boolean isGranted(long permissions, @Nonnull PropertyState property) {
-            EntryPredicate predicate = new EntryPredicate(tree, property, Permissions.respectParentPermissions(permissions));
-            Iterator<PermissionEntry> it = concat(new LazyIterator(this, true, predicate), new LazyIterator(this, false, predicate));
+        public boolean isGranted(long permissions, @NotNull PropertyState property) {
+            EntryPredicate predicate = EntryPredicate.create(tree, property, Permissions.respectParentPermissions(permissions));
+            Iterator<PermissionEntry> it = getIterator(predicate);
             return hasPermissions(it, predicate, permissions, tree.getPath());
         }
 
         //--------------------------------------------------------< private >---
         private Iterator<PermissionEntry> getIterator(@Nullable PropertyState property, long permissions) {
-            EntryPredicate predicate = new EntryPredicate(tree, property, Permissions.respectParentPermissions(permissions));
-            return concat(new LazyIterator(this, true, predicate), new LazyIterator(this, false, predicate));
+            EntryPredicate predicate = EntryPredicate.create(tree, property, Permissions.respectParentPermissions(permissions));
+            return getIterator(predicate);
+        }
+
+        private Iterator<PermissionEntry> getIterator(@NotNull EntryPredicate predicate) {
+            if (userStore != null && groupStore != null) {
+                return concat(new LazyIterator(this, true, predicate), new LazyIterator(this, false, predicate));
+            } else if (userStore != null) {
+                return new LazyIterator(this, true, predicate);
+            } else if (groupStore != null) {
+                return new LazyIterator(this, false, predicate);
+            } else {
+                return Collections.emptyIterator();
+            }
         }
 
         private Iterator<PermissionEntry> getUserEntries() {
             if (userEntries == null) {
-                userEntries = userStore.getEntries(tree);
+                userEntries = userStore != null ? userStore.getEntries(tree) : Collections.emptyList();
             }
             return userEntries.iterator();
         }
 
         private Iterator<PermissionEntry> getGroupEntries() {
             if (groupEntries == null) {
-                groupEntries = groupStore.getEntries(tree);
+                groupEntries = groupStore != null ? groupStore.getEntries(tree) : Collections.emptyList();
             }
             return groupEntries.iterator();
         }
@@ -579,11 +625,11 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         private final EntryPredicate predicate;
 
         // the ordered permission entries at a given path in the hierarchy
-        private Iterator<PermissionEntry> nextEntries = Iterators.emptyIterator();
+        private Iterator<PermissionEntry> nextEntries = Collections.emptyIterator();
 
         private TreePermissionImpl tp;
 
-        private LazyIterator(@Nonnull TreePermissionImpl treePermission, boolean isUser, @Nonnull EntryPredicate predicate) {
+        private LazyIterator(@NotNull TreePermissionImpl treePermission, boolean isUser, @NotNull EntryPredicate predicate) {
             this.treePermission = treePermission;
             this.isUser = isUser;
             this.predicate = predicate;
@@ -616,8 +662,8 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
 
     private interface ReadPolicy {
 
-        boolean isReadableTree(@Nonnull Tree tree, @Nullable TreePermissionImpl parent);
-        boolean isReadableTree(@Nonnull Tree tree, boolean exactMatch);
+        boolean isReadableTree(@NotNull Tree tree, @Nullable TreePermissionImpl parent);
+        boolean isReadableTree(@NotNull Tree tree, boolean exactMatch);
         boolean isReadablePath(@Nullable String treePath, boolean exactMatch);
     }
 
@@ -628,12 +674,12 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         private EmptyReadPolicy() {}
 
         @Override
-        public boolean isReadableTree(@Nonnull Tree tree, @Nullable TreePermissionImpl parent) {
+        public boolean isReadableTree(@NotNull Tree tree, @Nullable TreePermissionImpl parent) {
             return false;
         }
 
         @Override
-        public boolean isReadableTree(@Nonnull Tree tree, boolean exactMatch) {
+        public boolean isReadableTree(@NotNull Tree tree, boolean exactMatch) {
             return false;
         }
 
@@ -650,7 +696,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         private final boolean isDefaultPaths;
 
         private DefaultReadPolicy(Set<String> readPaths) {
-            this.readPaths = readPaths.toArray(new String[readPaths.size()]);
+            this.readPaths = readPaths.toArray(new String[0]);
             altReadPaths = new String[readPaths.size()];
             int i = 0;
             for (String p : this.readPaths) {
@@ -662,7 +708,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
 
         @Override
-        public boolean isReadableTree(@Nonnull Tree tree, @Nullable TreePermissionImpl parent) {
+        public boolean isReadableTree(@NotNull Tree tree, @Nullable TreePermissionImpl parent) {
             if (parent != null) {
                 if (parent.isReadableTree) {
                     return true;
@@ -677,7 +723,7 @@ final class CompiledPermissionImpl implements CompiledPermissions, PermissionCon
         }
 
         @Override
-        public boolean isReadableTree(@Nonnull Tree tree, boolean exactMatch) {
+        public boolean isReadableTree(@NotNull Tree tree, boolean exactMatch) {
             String targetPath = tree.getPath();
             for (String path : readPaths) {
                 if (targetPath.equals(path)) {

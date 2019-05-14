@@ -19,7 +19,6 @@ package org.apache.jackrabbit.oak.spi.security.authentication.external.impl;
 import java.util.Calendar;
 import java.util.Iterator;
 import java.util.Set;
-import javax.annotation.Nonnull;
 import javax.jcr.SimpleCredentials;
 import javax.jcr.Value;
 
@@ -37,6 +36,7 @@ import org.apache.jackrabbit.oak.spi.security.authentication.external.SyncedIden
 import org.apache.jackrabbit.oak.spi.security.authentication.external.basic.DefaultSyncConfig;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.basic.DefaultSyncContext;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.basic.DefaultSyncedIdentity;
+import org.jetbrains.annotations.NotNull;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -82,7 +82,7 @@ public class DefaultSyncHandlerTest extends ExternalLoginModuleTestBase {
         super.setSyncConfig(cfg);
     }
 
-    private void sync(@Nonnull String id, boolean isGroup) throws Exception {
+    private void sync(@NotNull String id, boolean isGroup) throws Exception {
         SyncContext ctx = syncHandler.createContext(idp, userManager, getValueFactory());
         ExternalIdentity exIdentity = (isGroup) ? idp.getGroup(id) : idp.getUser(id);
         assertNotNull(exIdentity);
@@ -98,7 +98,7 @@ public class DefaultSyncHandlerTest extends ExternalLoginModuleTestBase {
     }
 
     @Test
-    public void testCreateContext() throws Exception {
+    public void testCreateContext() {
         SyncContext ctx = syncHandler.createContext(idp, userManager, getValueFactory());
         assertTrue(ctx instanceof DefaultSyncContext);
     }
@@ -202,7 +202,7 @@ public class DefaultSyncHandlerTest extends ExternalLoginModuleTestBase {
     }
 
     @Test
-    public void testRequiresSyncMissingExternalIDRef() throws Exception {
+    public void testRequiresSyncMissingExternalIDRef() {
         assertTrue(syncHandler.requiresSync(new DefaultSyncedIdentity(USER_ID, null, false, Long.MAX_VALUE)));
     }
 
@@ -264,5 +264,26 @@ public class DefaultSyncHandlerTest extends ExternalLoginModuleTestBase {
             assertNotNull(ref);
             assertNotNull(ref.getProviderName());
         }
+    }
+
+    @Test
+    public void testLastSynced() throws Exception {
+        sync(USER_ID, false);
+
+        // force sync on next update
+        Authorizable a = userManager.getAuthorizable(USER_ID);
+        a.removeProperty(DefaultSyncContext.REP_LAST_SYNCED);
+        root.commit();
+
+        // start sync
+        SyncContext ctx = syncHandler.createContext(idp, userManager, getValueFactory());
+        SyncResult res = ctx.sync(USER_ID);
+        assertSame(SyncResult.Status.UPDATE, res.getStatus());
+
+        // concurrent login
+        login(new SimpleCredentials(USER_ID, new char[0])).close();
+
+        // the conflict handler needs to fix overlapping update
+        root.commit();
     }
 }

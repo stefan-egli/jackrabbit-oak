@@ -24,12 +24,12 @@ import java.io.IOException;
 import java.util.List;
 
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexCopier;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition;
-import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.IndexingMode;
-import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexEditorContext;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexDefinition;
 import org.apache.jackrabbit.oak.plugins.index.lucene.TestUtil;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexEditorContext;
 import org.apache.jackrabbit.oak.plugins.index.lucene.reader.LuceneIndexReader;
 import org.apache.jackrabbit.oak.plugins.index.lucene.writer.LuceneIndexWriter;
+import org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.stats.StatisticsProvider;
@@ -42,7 +42,7 @@ import org.junit.rules.TemporaryFolder;
 
 import static com.google.common.util.concurrent.MoreExecutors.sameThreadExecutor;
 import static org.apache.jackrabbit.oak.plugins.index.lucene.FieldFactory.newPathField;
-import static org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent.INITIAL_CONTENT;
+import static org.apache.jackrabbit.oak.InitialContentHelper.INITIAL_CONTENT;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -66,6 +66,7 @@ public class NRTIndexTest {
     public void setUp() throws IOException {
         indexCopier = new IndexCopier(sameThreadExecutor(), temporaryFolder.getRoot());
         indexFactory = new NRTIndexFactory(indexCopier, StatisticsProvider.NOOP);
+        indexFactory.setAssertAllResourcesClosed(true);
         LuceneIndexEditorContext.configureUniqueId(builder);
     }
 
@@ -77,7 +78,7 @@ public class NRTIndexTest {
 
     @Test
     public void getReaderWithoutWriter() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
 
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         List<LuceneIndexReader> readers = idx1.getReaders();
@@ -93,7 +94,7 @@ public class NRTIndexTest {
 
     @Test
     public void writerCreation() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
         NRTIndex idx = indexFactory.createIndex(idxDefn);
         LuceneIndexWriter writer = idx.getWriter();
 
@@ -108,7 +109,7 @@ public class NRTIndexTest {
 
     @Test
     public void dirDeletedUponClose() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
         NRTIndex idx = indexFactory.createIndex(idxDefn);
         LuceneIndexWriter writer = idx.getWriter();
         File indexDir = idx.getIndexDir();
@@ -135,7 +136,7 @@ public class NRTIndexTest {
 
     @Test
     public void multipleUpdateForSamePath() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
         NRTIndex idx = indexFactory.createIndex(idxDefn);
         LuceneIndexWriter writer = idx.getWriter();
 
@@ -143,18 +144,18 @@ public class NRTIndexTest {
         document.add(newPathField("/a/b"));
 
         writer.updateDocument("/a/b", document);
-        assertEquals(1, idx.getPrimaryReader().getReader().numDocs());
+        assertEquals(1, idx.getPrimaryReaderForTest().numDocs());
 
         writer.updateDocument("/a/b", document);
 
         //Update for same path should not lead to deletion
-        assertEquals(2, idx.getPrimaryReader().getReader().numDocs());
-        assertEquals(0, idx.getPrimaryReader().getReader().numDeletedDocs());
+        assertEquals(2, idx.getPrimaryReaderForTest().numDocs());
+        assertEquals(0, idx.getPrimaryReaderForTest().numDeletedDocs());
     }
 
     @Test
     public void previousIndexInitialized() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         LuceneIndexWriter w1 = idx1.getWriter();
 
@@ -173,7 +174,7 @@ public class NRTIndexTest {
 
     @Test
     public void sameReaderIfNoChange() throws Exception{
-        IndexDefinition idxDefn = getSyncIndexDefinition("/foo");
+        LuceneIndexDefinition idxDefn = getSyncIndexDefinition("/foo");
         NRTIndex idx1 = indexFactory.createIndex(idxDefn);
         LuceneIndexWriter w1 = idx1.getWriter();
 
@@ -191,10 +192,10 @@ public class NRTIndexTest {
         assertNotSame(readers2, readers3);
     }
 
-    private IndexDefinition getSyncIndexDefinition(String indexPath) {
-        TestUtil.enableIndexingMode(builder, IndexingMode.NRT);
+    private LuceneIndexDefinition getSyncIndexDefinition(String indexPath) {
+        TestUtil.enableIndexingMode(builder, FulltextIndexConstants.IndexingMode.NRT);
 
-        return new IndexDefinition(root, builder.getNodeState(), indexPath);
+        return new LuceneIndexDefinition(root, builder.getNodeState(), indexPath);
     }
 
 

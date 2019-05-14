@@ -19,9 +19,16 @@
 
 package org.apache.jackrabbit.oak.plugins.index.lucene.directory;
 
+import java.io.File;
 import java.io.IOException;
+import java.util.List;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.lucene.index.SegmentCommitInfo;
+import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.store.Directory;
+
+import static org.apache.jackrabbit.oak.plugins.index.lucene.directory.IndexRootDirectory.INDEX_METADATA_FILE_NAME;
 
 public class DirectoryUtils {
     /**
@@ -54,5 +61,51 @@ public class DirectoryUtils {
             totalFileSize += directory.fileLength(file);
         }
         return totalFileSize;
+    }
+
+    public static File createIndexDir(File baseDir, String indexPath) throws IOException {
+        String subDirPath = IndexRootDirectory.getIndexFolderBaseName(indexPath);
+        IndexRootDirectory rootDir = new IndexRootDirectory(baseDir, false);
+        List<LocalIndexDir> existingDirs = rootDir.getLocalIndexes(indexPath);
+        File indexDir;
+        if (existingDirs.isEmpty()) {
+            indexDir = new File(baseDir, subDirPath);
+            int count = 0;
+            while (true) {
+                if (indexDir.exists()) {
+                    indexDir = new File(baseDir, subDirPath + "_" + count++);
+                } else {
+                    break;
+                }
+            }
+            FileUtils.forceMkdir(indexDir);
+        } else {
+            indexDir = existingDirs.get(0).dir;
+        }
+        return indexDir;
+    }
+
+    public static int getNumDocs(Directory dir) throws IOException {
+        int count = 0;
+        SegmentInfos sis = new SegmentInfos();
+        sis.read(dir);
+
+        for (SegmentCommitInfo sci : sis) {
+            count += sci.info.getDocCount() - sci.getDelCount();
+        }
+
+        return count;
+    }
+
+    static File createSubDir(File indexDir, String name) throws IOException {
+        String fsSafeName = name.replace(":", "");
+        File dir = new File(indexDir, fsSafeName);
+        FileUtils.forceMkdir(dir);
+        return dir;
+    }
+
+    static void writeMeta(File indexDir, IndexMeta meta) throws IOException {
+        File readMe = new File(indexDir, INDEX_METADATA_FILE_NAME);
+        meta.writeTo(readMe);
     }
 }

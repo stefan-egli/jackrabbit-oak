@@ -19,21 +19,19 @@ package org.apache.jackrabbit.oak.security.authorization.permission;
 import java.lang.reflect.Field;
 import java.security.Principal;
 
-import javax.annotation.Nonnull;
 import javax.jcr.security.AccessControlList;
 import javax.jcr.security.AccessControlManager;
 
 import com.google.common.collect.ImmutableSet;
 import org.apache.jackrabbit.commons.jackrabbit.authorization.AccessControlUtils;
 import org.apache.jackrabbit.oak.AbstractSecurityTest;
+import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.namepath.NamePathMapper;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyStates;
-import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
-import org.apache.jackrabbit.oak.plugins.tree.RootFactory;
-import org.apache.jackrabbit.oak.plugins.tree.impl.ImmutableTree;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
 import org.apache.jackrabbit.oak.plugins.version.ReadOnlyVersionManager;
 import org.apache.jackrabbit.oak.spi.security.authorization.AuthorizationConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authorization.permission.PermissionProvider;
@@ -43,13 +41,17 @@ import org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.util.NodeUtil;
-import org.apache.jackrabbit.oak.util.TreeUtil;
+import org.apache.jackrabbit.oak.plugins.tree.TreeUtil;
+import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 public class VersionTreePermissionTest extends AbstractSecurityTest implements NodeTypeConstants {
 
@@ -118,7 +120,7 @@ public class VersionTreePermissionTest extends AbstractSecurityTest implements N
         return tp;
     }
 
-    private void assertVersionPermission(@Nonnull TreePermission tp, @Nonnull String expectedPath, boolean canRead) throws Exception {
+    private void assertVersionPermission(@NotNull TreePermission tp, @NotNull String expectedPath, boolean canRead) throws Exception {
         assertTrue(tp instanceof VersionTreePermission);
         assertEquals(canRead, tp.canRead());
         assertEquals(canRead, tp.canRead(PropertyStates.createProperty("any", "Value")));
@@ -166,17 +168,17 @@ public class VersionTreePermissionTest extends AbstractSecurityTest implements N
     public void testGetChild() throws Exception {
         Tree versionHistory = checkNotNull(vMgr.getVersionHistory(testTree));
 
-        ImmutableTree t = (ImmutableTree) RootFactory.createReadOnlyRoot(root).getTree("/");
+        Tree t = getRootProvider().createReadOnlyRoot(root).getTree("/");
         TreePermission tp = pp.getTreePermission(t, TreePermission.EMPTY);
         for (String name : PathUtils.elements(versionHistory.getPath())) {
             t = t.getChild(name);
-            tp = tp.getChildPermission(name, t.getNodeState());
+            tp = tp.getChildPermission(name, getTreeProvider().asNodeState(t));
         }
 
         String expectedPath = "/test";
         assertVersionPermission(tp, "/test", true);
 
-        NodeState ns = t.getChild("1.0").getNodeState();
+        NodeState ns = getTreeProvider().asNodeState(t.getChild("1.0"));
         tp = tp.getChildPermission("1.0", ns);
         assertVersionPermission(tp, "/test", true);
 
@@ -262,5 +264,62 @@ public class VersionTreePermissionTest extends AbstractSecurityTest implements N
         Tree frozenC = frozenB.getChild("c");
         tp = pp.getTreePermission(frozenC, tp);
         assertVersionPermission(tp, "/test/a/b/c", true);
+    }
+
+    @Test
+    public void testCanRead() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        vtp.canRead();
+        verify(versionableTreePermission, times(1)).canRead();
+    }
+
+    @Test
+    public void testCanReadProperty() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        PropertyState ps = mock(PropertyState.class);
+        vtp.canRead(ps);
+        verify(versionableTreePermission, times(1)).canRead(ps);
+    }
+
+    @Test
+    public void testCanReadAll() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        vtp.canReadAll();
+        verify(versionableTreePermission, times(1)).canReadAll();
+    }
+
+    @Test
+    public void testCanReadProperties() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        vtp.canReadProperties();
+        verify(versionableTreePermission, times(1)).canReadProperties();
+    }
+
+    @Test
+    public void testIsGranted() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        vtp.isGranted(Permissions.ALL);
+        verify(versionableTreePermission, times(1)).isGranted(Permissions.ALL);
+    }
+
+    @Test
+    public void testIsGrantedProperty() {
+        TreePermission versionableTreePermission = mock(TreePermission.class);
+        VersionTreePermission vtp = new VersionTreePermission(mock(Tree.class), versionableTreePermission, getTreeProvider());
+
+        PropertyState ps = mock(PropertyState.class);
+
+        vtp.isGranted(Permissions.ALL, ps);
+        verify(versionableTreePermission, times(1)).isGranted(Permissions.ALL, ps);
     }
 }

@@ -21,7 +21,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nonnull;
 import javax.jcr.SimpleCredentials;
 import javax.jcr.Value;
 
@@ -37,8 +36,7 @@ import org.apache.jackrabbit.oak.spi.security.authentication.external.impl.Defau
 import org.apache.jackrabbit.oak.spi.security.authentication.external.impl.ExternalIdentityConstants;
 import org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal;
 import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUtils;
-import org.apache.sling.testing.mock.osgi.junit.OsgiContext;
-import org.junit.Rule;
+import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -49,33 +47,26 @@ import static org.junit.Assert.assertTrue;
 
 public class ExternalLoginModuleDynamicMembershipTest extends ExternalLoginModuleTest {
 
-    @Rule
-    public final OsgiContext context = new OsgiContext();
-
     @Override
     public void before() throws Exception {
         super.before();
 
         syncConfig.user().setDynamicMembership(true);
 
-        // register the ExternalPrincipal configuration in order to have it's
-        // activate method invoked.
-        context.registerInjectActivateService(externalPrincipalConfiguration);
-
         // now register the sync-handler with the dynamic membership config
         // in order to enable dynamic membership with the external principal configuration
-        Map props = ImmutableMap.of(DefaultSyncConfigImpl.PARAM_USER_DYNAMIC_MEMBERSHIP, syncConfig.user().getDynamicMembership());
+        Map<String, Boolean> props = ImmutableMap.of(DefaultSyncConfigImpl.PARAM_USER_DYNAMIC_MEMBERSHIP, syncConfig.user().getDynamicMembership());
         context.registerService(SyncHandler.class, WhiteboardUtils.getService(whiteboard, SyncHandler.class), props);
     }
 
-    private void assertExternalPrincipalNames(@Nonnull UserManager userMgr, @Nonnull String id) throws Exception {
+    private void assertExternalPrincipalNames(@NotNull UserManager userMgr, @NotNull String id) throws Exception {
         Authorizable a = userMgr.getAuthorizable(id);
         assertNotNull(a);
 
-        Set<String> expected = new HashSet();
+        Set<String> expected = new HashSet<>();
         calcExpectedPrincipalNames(idp.getUser(id), syncConfig.user().getMembershipNestingDepth(), expected);
 
-        Set<String> extPrincNames = new HashSet();
+        Set<String> extPrincNames = new HashSet<>();
         for (Value v : a.getProperty(ExternalIdentityConstants.REP_EXTERNAL_PRINCIPAL_NAMES)) {
             extPrincNames.add(v.getString());
         }
@@ -83,7 +74,7 @@ public class ExternalLoginModuleDynamicMembershipTest extends ExternalLoginModul
         assertEquals(expected, extPrincNames);
     }
 
-    private void calcExpectedPrincipalNames(@Nonnull ExternalIdentity identity, long depth, @Nonnull Set<String> expected) throws Exception {
+    private void calcExpectedPrincipalNames(@NotNull ExternalIdentity identity, long depth, @NotNull Set<String> expected) throws Exception {
         if (depth <= 0) {
             return;
         }
@@ -100,10 +91,10 @@ public class ExternalLoginModuleDynamicMembershipTest extends ExternalLoginModul
         try {
             cs = login(new SimpleCredentials(USER_ID, new char[0]));
 
-            Set<String> expectedExternal = new HashSet<String>();
+            Set<String> expectedExternal = new HashSet<>();
             calcExpectedPrincipalNames(idp.getUser(USER_ID), syncConfig.user().getMembershipNestingDepth(), expectedExternal);
 
-            Set<Principal> principals = new HashSet<Principal>(cs.getAuthInfo().getPrincipals());
+            Set<Principal> principals = new HashSet<>(cs.getAuthInfo().getPrincipals());
 
             root.refresh();
             PrincipalManager principalManager = getPrincipalManager(root);

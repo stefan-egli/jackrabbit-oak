@@ -22,7 +22,6 @@ import java.io.InputStream;
 import java.security.Principal;
 import java.util.Arrays;
 import java.util.List;
-import javax.annotation.Nullable;
 import javax.jcr.ImportUUIDBehavior;
 import javax.jcr.Node;
 import javax.jcr.RepositoryException;
@@ -38,6 +37,7 @@ import org.apache.jackrabbit.api.security.JackrabbitAccessControlEntry;
 import org.apache.jackrabbit.api.security.JackrabbitAccessControlList;
 import org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal;
 import org.apache.jackrabbit.test.AbstractJCRTest;
+import org.jetbrains.annotations.Nullable;
 
 public class AccessControlImporterTest extends AbstractJCRTest {
 
@@ -325,7 +325,7 @@ public class AccessControlImporterTest extends AbstractJCRTest {
             assertEquals(1, entries.length);
 
             AccessControlEntry entry = entries[0];
-            assertEquals(EveryonePrincipal.getInstance(), entry.getPrincipal());
+            assertEquals(EveryonePrincipal.getInstance().getName(), entry.getPrincipal().getName());
             List<Privilege> privs = Arrays.asList(entry.getPrivileges());
             assertEquals(1, privs.size());
             assertEquals(acMgr.privilegeFromName(Privilege.JCR_WRITE), entry.getPrivileges()[0]);

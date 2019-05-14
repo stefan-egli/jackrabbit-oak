@@ -51,7 +51,8 @@ to adhere to this rule and perform transient repository operation or validation.
 They must not force changes to be persisted by calling `org.apache.jackrabbit.oak.api.Root.commit()`.
 
 See section [Group Actions](groupaction.html) for a related extension to
-monitor group specific operations.
+monitor group specific operations and [User Actions](useraction.html) for 
+user specific operations.
 
 ### Default Implementations
 
@@ -183,7 +184,7 @@ that will later be used to store various target-specific profile information:
     Map<String, Object> userParams = new HashMap<String, Object>();
     userParams.put(UserConstants.PARAM_AUTHORIZABLE_ACTION_PROVIDER, new MyAuthorizableActionProvider());
     ConfigurationParameters config =  ConfigurationParameters.of(ImmutableMap.of(UserConfiguration.NAME, ConfigurationParameters.of(userParams)));
-    SecurityProvider securityProvider = new SecurityProviderImpl(config));
+    SecurityProvider securityProvider = SecurityProviderBuilder.newBuilder().with(config).build();
     Repository repo = new Jcr(new Oak()).with(securityProvider).createRepository();
 
 

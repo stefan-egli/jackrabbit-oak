@@ -23,9 +23,6 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
 import com.google.common.collect.ImmutableMap;
 import org.apache.jackrabbit.oak.api.Blob;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
@@ -39,6 +36,8 @@ import org.apache.jackrabbit.oak.spi.security.authentication.external.ExternalId
 import org.apache.jackrabbit.oak.spi.security.authentication.external.ExternalUser;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.TestIdentityProvider;
 import org.apache.jackrabbit.oak.spi.security.authentication.external.impl.DefaultSyncHandler;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -75,11 +74,11 @@ public class DelegateeTest extends AbstractJmxTest {
         return 100;
     }
 
-    private Delegatee createDelegatee(@Nonnull ExternalIdentityProvider idp) {
+    private Delegatee createDelegatee(@NotNull ExternalIdentityProvider idp) {
         return Delegatee.createInstance(getContentRepository(), getSecurityProvider(), new DefaultSyncHandler(syncConfig), idp, getBatchSize());
     }
 
-    private static Root preventRootCommit(@Nonnull Delegatee delegatee) throws Exception {
+    private static Root preventRootCommit(@NotNull Delegatee delegatee) throws Exception {
         Field rootField = Delegatee.class.getDeclaredField("root");
         rootField.setAccessible(true);
 
@@ -214,11 +213,11 @@ public class DelegateeTest extends AbstractJmxTest {
     public void testSyncExternalUsersSaveError() throws Exception {
         Root r = preventRootCommit(delegatee);;
 
-        List<String> externalIds = new ArrayList();
+        List<String> externalIds = new ArrayList<>();
         for (String id : TEST_IDS) {
                 externalIds.add(new ExternalIdentityRef(id, idp.getName()).getString());
         }
-        String[] result = delegatee.syncExternalUsers(externalIds.toArray(new String[externalIds.size()]));
+        String[] result = delegatee.syncExternalUsers(externalIds.toArray(new String[0]));
         assertResultMessages(result, ImmutableMap.of(
                 TestIdentityProvider.ID_TEST_USER, "ERR",
                 TestIdentityProvider.ID_SECOND_USER, "ERR",
@@ -243,7 +242,7 @@ public class DelegateeTest extends AbstractJmxTest {
     public void testSyncAllExternalUsersThrowingIDP() {
         Delegatee dg = createDelegatee(new TestIdentityProvider("throwing") {
 
-            @Nonnull
+            @NotNull
             @Override
             public Iterator<ExternalUser> listUsers() throws ExternalIdentityException {
                 throw new ExternalIdentityException();
@@ -272,7 +271,7 @@ public class DelegateeTest extends AbstractJmxTest {
 
         private Root base;
 
-        private ThrowingRoot(@Nonnull Root base) {
+        private ThrowingRoot(@NotNull Root base) {
             this.base = base;
         }
 
@@ -281,9 +280,9 @@ public class DelegateeTest extends AbstractJmxTest {
             return base.move(srcAbsPath, destAbsPath);
         }
 
-        @Nonnull
+        @NotNull
         @Override
-        public Tree getTree(@Nonnull String path) {
+        public Tree getTree(@NotNull String path) {
             return base.getTree(path);
         }
 
@@ -303,7 +302,7 @@ public class DelegateeTest extends AbstractJmxTest {
         }
 
         @Override
-        public void commit(@Nonnull Map<String, Object> info) throws CommitFailedException {
+        public void commit(@NotNull Map<String, Object> info) throws CommitFailedException {
             throw new CommitFailedException(CommitFailedException.OAK, 0, "failed");
         }
 
@@ -312,25 +311,25 @@ public class DelegateeTest extends AbstractJmxTest {
             return base.hasPendingChanges();
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public QueryEngine getQueryEngine() {
             return base.getQueryEngine();
         }
 
-        @Nonnull
+        @NotNull
         @Override
-        public Blob createBlob(@Nonnull InputStream stream) throws IOException {
+        public Blob createBlob(@NotNull InputStream stream) throws IOException {
             return base.createBlob(stream);
         }
 
-        @CheckForNull
+        @Nullable
         @Override
-        public Blob getBlob(@Nonnull String reference) {
+        public Blob getBlob(@NotNull String reference) {
             return base.getBlob(reference);
         }
 
-        @Nonnull
+        @NotNull
         @Override
         public ContentSession getContentSession() {
             return base.getContentSession();

@@ -32,6 +32,8 @@ public class MigrationOptions {
 
     private static final DateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd");
 
+    private static final String ADD_SECONDARY_METADATA_PROP = "oak.upgrade.addSecondaryMetadata";
+
     private final boolean copyBinaries;
 
     private final boolean disableMmap;
@@ -48,8 +50,6 @@ public class MigrationOptions {
 
     private final String[] mergePaths;
 
-    private final boolean includeIndex;
-
     private final boolean failOnError;
 
     private final boolean earlyShutdown;
@@ -65,6 +65,8 @@ public class MigrationOptions {
     private final boolean onlyVerify;
 
     private final boolean skipCheckpoints;
+
+    private final boolean forceCheckpoints;
 
     private final String srcUser;
 
@@ -92,6 +94,8 @@ public class MigrationOptions {
 
     private final Boolean srcExternalBlobs;
 
+    private final Boolean addSecondaryMetadata;
+
     public MigrationOptions(MigrationCliArguments args) throws CliArgumentException {
         this.disableMmap = args.hasOption(OptionParserFactory.DISABLE_MMAP);
         this.copyBinaries = args.hasOption(OptionParserFactory.COPY_BINARIES);
@@ -116,7 +120,6 @@ public class MigrationOptions {
         this.includePaths = checkPaths(args.getOptionList(OptionParserFactory.INCLUDE_PATHS));
         this.excludePaths = checkPaths(args.getOptionList(OptionParserFactory.EXCLUDE_PATHS));
         this.mergePaths = checkPaths(args.getOptionList(OptionParserFactory.MERGE_PATHS));
-        this.includeIndex = args.hasOption(OptionParserFactory.INCLUDE_INDEX);
         this.failOnError = args.hasOption(OptionParserFactory.FAIL_ON_ERROR);
         this.earlyShutdown = args.hasOption(OptionParserFactory.EARLY_SHUTDOWN);
         this.skipInitialization = args.hasOption(OptionParserFactory.SKIP_INIT);
@@ -125,9 +128,10 @@ public class MigrationOptions {
         this.verify = args.hasOption(OptionParserFactory.VERIFY);
         this.onlyVerify = args.hasOption(OptionParserFactory.ONLY_VERIFY);
         this.skipCheckpoints = args.hasOption(OptionParserFactory.SKIP_CHECKPOINTS);
+        this.forceCheckpoints = args.hasOption(OptionParserFactory.FORCE_CHECKPOINTS);
 
         this.srcUser = args.getOption(OptionParserFactory.SRC_USER);
-        this.srcPassword = args.getOption(OptionParserFactory.SRC_USER);
+        this.srcPassword = args.getOption(OptionParserFactory.SRC_PASSWORD);
         this.dstUser = args.getOption(OptionParserFactory.DST_USER);
         this.dstPassword = args.getOption(OptionParserFactory.DST_PASSWORD);
 
@@ -142,10 +146,15 @@ public class MigrationOptions {
         this.dstS3Config = args.getOption(OptionParserFactory.DST_S3_CONFIG);
 
         if (args.hasOption(OptionParserFactory.SRC_EXTERNAL_BLOBS)) {
-            this.srcExternalBlobs = Boolean
-                    .valueOf(OptionParserFactory.SRC_EXTERNAL_BLOBS);
+            this.srcExternalBlobs = args.getBooleanOption(OptionParserFactory.SRC_EXTERNAL_BLOBS);
         } else {
             this.srcExternalBlobs = null;
+        }
+
+        if (System.getProperty(ADD_SECONDARY_METADATA_PROP) == null) {
+            this.addSecondaryMetadata = args.hasOption(OptionParserFactory.ADD_SECONDARY_METADATA);
+        } else {
+            this.addSecondaryMetadata = Boolean.getBoolean(ADD_SECONDARY_METADATA_PROP);
         }
     }
 
@@ -197,10 +206,6 @@ public class MigrationOptions {
         return skipNameCheck;
     }
 
-    public boolean isIncludeIndex() {
-        return includeIndex;
-    }
-
     public boolean isIgnoreMissingBinaries() {
         return ignoreMissingBinaries;
     }
@@ -216,6 +221,12 @@ public class MigrationOptions {
     public boolean isSkipCheckpoints() {
         return skipCheckpoints;
     }
+
+    public boolean isForceCheckpoints() {
+        return forceCheckpoints;
+    }
+
+    public boolean isAddSecondaryMetadata() { return addSecondaryMetadata; }
 
     public String getSrcUser() {
         return srcUser;
@@ -338,10 +349,6 @@ public class MigrationOptions {
             log.info("Test for long-named nodes will be disabled");
         }
 
-        if (includeIndex) {
-            log.info("Index data for the paths {} will be copied", (Object) includePaths);
-        }
-
         if (ignoreMissingBinaries) {
             log.info("Missing binaries won't break the migration");
         }
@@ -352,6 +359,14 @@ public class MigrationOptions {
 
         if (skipCheckpoints) {
             log.info("Checkpoints won't be migrated");
+        }
+
+        if (forceCheckpoints) {
+            log.info("Checkpoints will be migrated even with the custom paths specified");
+        }
+
+        if (addSecondaryMetadata) {
+            log.info("Secondary metadata will be added");
         }
 
         log.info("Cache size: {} MB", cacheSizeInMB);

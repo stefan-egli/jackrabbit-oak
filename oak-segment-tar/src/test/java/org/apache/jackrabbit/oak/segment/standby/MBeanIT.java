@@ -31,11 +31,11 @@ import java.util.Set;
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
 
+import org.apache.jackrabbit.oak.commons.junit.TemporaryPort;
 import org.apache.jackrabbit.oak.segment.standby.client.StandbyClientSync;
 import org.apache.jackrabbit.oak.segment.standby.jmx.StandbyStatusMBean;
 import org.apache.jackrabbit.oak.segment.standby.server.StandbyServerSync;
 import org.apache.jackrabbit.oak.segment.test.TemporaryFileStore;
-import org.apache.jackrabbit.oak.commons.junit.TemporaryPort;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.RuleChain;
@@ -61,7 +61,13 @@ public class MBeanIT extends TestBase {
     public void testServerEmptyConfig() throws Exception {
         MBeanServer jmxServer = ManagementFactory.getPlatformMBeanServer();
         ObjectName status = new ObjectName(StandbyStatusMBean.JMX_NAME + ",id=*");
-        try (StandbyServerSync serverSync = new StandbyServerSync(serverPort.getPort(), serverFileStore.fileStore())) {
+        try (
+            StandbyServerSync serverSync = StandbyServerSync.builder()
+                .withPort(serverPort.getPort())
+                .withFileStore(serverFileStore.fileStore())
+                .withBlobChunkSize(1 * MB)
+                .build()
+        ) {
             serverSync.start();
 
             Set<ObjectName> instances = jmxServer.queryNames(status, null);
@@ -93,7 +99,7 @@ public class MBeanIT extends TestBase {
     public void testClientEmptyConfigNoServer() throws Exception {
         MBeanServer jmxServer = ManagementFactory.getPlatformMBeanServer();
         ObjectName status = new ObjectName(StandbyStatusMBean.JMX_NAME + ",id=*");
-        try (StandbyClientSync clientSync = newStandbyClientSync(clientFileStore.fileStore(), serverPort.getPort())) {
+        try (StandbyClientSync clientSync = new StandbyClientSync(getServerHost(), serverPort.getPort(), clientFileStore.fileStore(), false, getClientTimeout(), false, folder.newFolder())) {
             clientSync.start();
             clientSync.run();
 
@@ -130,7 +136,7 @@ public class MBeanIT extends TestBase {
         System.setProperty(StandbyClientSync.CLIENT_ID_PROPERTY_NAME, "Foo");
         MBeanServer jmxServer = ManagementFactory.getPlatformMBeanServer();
         ObjectName status;
-        try (StandbyClientSync clientSync = newStandbyClientSync(clientFileStore.fileStore(), serverPort.getPort())) {
+        try (StandbyClientSync clientSync = new StandbyClientSync(getServerHost(), serverPort.getPort(), clientFileStore.fileStore(), false, getClientTimeout(), false, folder.newFolder())) {
             clientSync.start();
             clientSync.run();
 
@@ -153,10 +159,15 @@ public class MBeanIT extends TestBase {
         MBeanServer jmxServer = ManagementFactory.getPlatformMBeanServer();
         ObjectName clientStatus, serverStatus;
         try (
-                StandbyServerSync serverSync = new StandbyServerSync(serverPort.getPort(), serverFileStore.fileStore());
-                StandbyClientSync clientSync = newStandbyClientSync(clientFileStore.fileStore(), serverPort.getPort())
+            StandbyServerSync serverSync = StandbyServerSync.builder()
+                .withPort(serverPort.getPort())
+                .withFileStore(serverFileStore.fileStore())
+                .withBlobChunkSize(MB)
+                .build();
+            StandbyClientSync clientSync = new StandbyClientSync(getServerHost(), serverPort.getPort(), clientFileStore.fileStore(), false, getClientTimeout(), false, folder.newFolder())
         ) {
             serverSync.start();
+            serverFileStore.fileStore().flush();
 
             clientSync.start();
             clientSync.run();

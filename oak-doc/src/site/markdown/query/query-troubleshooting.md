@@ -23,10 +23,29 @@ The first step in query troubleshooting is often to detect a query is slow,
 or traverses many nodes. Queries that traverse many nodes are logged
 as follows:
 
-    *WARN* org.apache.jackrabbit.oak.spi.query.Cursors$TraversingCursor 
+    *WARN* org.apache.jackrabbit.oak.plugins.index.Cursors$TraversingCursor 
         Traversed 22000 nodes with filter Filter(query=
         select * from [nt:base] where isdescendantnode('/etc') and lower([jcr:title]) like '%coat%');
         consider creating an index or changing the query
+
+To get good performance, queries should not traverse more than about 1000 nodes
+(specially for queries that are run often).
+
+#### Potentially Slow Queries
+
+In addition to avoiding queries that traverse many nodes, 
+it makes sense to avoid queries that don't use an index.
+Such queries might be fast (and only traverse few nodes) with a small repository,
+but with a large repository they are typically slow as well.
+Therefore, it makes sense to detect such queries as soon as possible
+(in a developer environment), 
+even before the code that runs those queries is tested with a larger repository.
+Oak will detect such queries and log them as follows 
+(with log level INFO for Oak 1.6.x, and WARN for Oak 1.8.x):
+
+    *INFO* org.apache.jackrabbit.oak.query.QueryImpl Traversal query (query without index): 
+        select * from [nt:base] where isdescendantnode('/etc') and lower([jcr:title]) like '%coat%'; 
+        consider creating an index
 
 #### Query Plan
 
@@ -60,7 +79,9 @@ But in this case, it already was enough to make the traversal warning go away.
 
 #### Queries Without Index
 
-Still, there is a message in the log file that complains the query doesn't use an index:
+After changing the query, 
+there is still a message in the log file that complains the query doesn't use an index,
+as described above:
 
     *INFO* org.apache.jackrabbit.oak.query.QueryImpl 
         Traversal query (query without index): 
@@ -73,6 +94,23 @@ In this case, there are relatively few nodes because it's
 an almost empty development repository, so no traversal warning is logged.
 But for production, there might be a lot more nodes under `/etc/commerce`, 
 so it makes sense to continue optimization.
+
+#### Where Traversal is OK
+
+If it is known from the data model that a query will never traverse many nodes,
+then no index is needed. This is a corner case, and only applies to queries that 
+traverse a fixed number of (for example) configuration nodes, or
+if the number of descendant nodes is guaranteed to be very low by using 
+a certain nodetype that only allows for a fixed number of child nodes.
+If this is the case, then the query can be changed to say traversal is fine.
+To mark such queries, append `option(traversal ok)` to the query.
+This feature should only be used for those rare corner cases.
+
+    select * from [nt:base] 
+    where isdescendantnode('/etc/commerce') 
+    and lower([jcr:title]) like '%coat%'
+    and [commerceType] = 'product'
+    option(traversal ok)
 
 #### Estimating Node Counts
 
@@ -101,9 +139,14 @@ that queries that _must_ traverse over nodes will fail.
 
 #### Using a Different or New Index
 
-There are now multiple options:
+There are multiple options:
 
-* If there are very few nodes with that nodetype, 
+* Consider creating an index for `jcr:title`. But for `like '%..%'` conditions,
+  this is not of much help, because all nodes with that property will need to be read.
+  Also, using `lower` will make the index less effective.
+  So, this only makes sense if there are very few nodes with this property
+  expected to be in the system.
+* If there are very few nodes with that nodetype,
   consider adding `acme:Product` to the nodetype index. This requires reindexing.
   The query could then use the nodetype index, and within this nodetype,
   just traverse below `/etc/commerce`.
@@ -111,11 +154,12 @@ There are now multiple options:
   nodes are in the repository, if this nodetype is indexed.
   To find out, run `getEstimatedChildNodeCounts` with
   `p1=/oak:index/nodetype` and `p2=2`.
-* Consider creating an index for `jcr:title`. But for `like '%..%'` conditions,
-  this is not of much help, because all nodes with that property will need to be read.
-  Also, using `lower` will make the index less effective.
-  So, this only makes sense if there are very few nodes with this property
-  expected to be in the system.
+* If the query needs to return added nodes immediately (synchronously; that is without delay),
+  consider creating a [property index](./property-index.html).
+  Note that Lucene indexes are asynchronous, and new nodes may not
+  appear in the result for a few seconds.
+* To ensure there is only one node matching the result in the repository,
+  consider creating a unique [property index](./property-index.html).
 * Consider using a fulltext index, that is: change the query from using 
   `lower([jcr:title]) like '%...%'` to using `contains([jcr:title], '...')`.
   Possibly combine this with adding the property
@@ -127,6 +171,16 @@ The last plan is possibly the best solution for this case.
 
 In case you need to modify or create a Lucene property index,
 you can use the [Oak Index Definition Generator](http://oakutils.appspot.com/generate/index) tool.
+
+As the tool doesn't know your index configuration, it will always suggest
+to create a new index; it might be better to extend an existing index.
+However, note that:
+
+* Changing an existing index requires reindexing that index.
+* If an out-of-the-box index is modified, you will need to merge those modifications 
+  when migrating to newer software.
+  It is best to add documentation to the index definition to simplify merging,
+  for example in the form of "info" properties.
 
 #### Verification
 
@@ -145,3 +199,60 @@ So in this case, only the fulltext restriction of the query was used by the inde
 but this might already be sufficient. If it is not, then the fulltext index might
 be changed to also index `commerceType`, or possibly 
 to use `evaluatePathRestrictions`.
+
+#### Queries With Many OR or UNION Conditions
+
+Queries that contain many "or" conditions, or with many "union" subqueries,
+can be slow as they have to read a lot of data.
+Example query:
+
+    /jcr:root/content/(a|b|c|d|e)//element(*, cq:Page)[
+    jcr:contains(@jcr:title, 'some text') 
+    or jcr:contains(jcr:content/@keywords, 'some text')
+    or jcr:contains(jcr:content/@cq:tags, 'some text')
+    or jcr:contains(jcr:content/@team, 'some text')
+    or jcr:contains(jcr:content/@topics, 'some text')
+    or jcr:contains(jcr:content/@jcr:description, 'some text')]
+
+This query will be internally converted into 5 subqueries, due to the "union" clause (a|b|c|d|e).
+Then, each of the 5 subqueries will run 6 subqueries: one for each jcr:contains condition.
+So, the index will be contacted 30 times.
+
+To avoid this overhead, the index could be changed (or a new index created) to do aggregation
+on the required properties (here: jcr:title, jcr:content/keywords,...).
+This will simplify the query to:
+
+    /jcr:root/content/(a|b|c|d|e)//element(*, cq:Page)[jcr:contains(., 'some text')]
+
+This should resolve most problems.
+To further speed up the query by avoiding to running 5 subqueries, 
+it might be better to use a less specific path constraint,
+but instead use a different way to filter results, such as:
+
+    /jcr:root/content//element(*, cq:Page)[jcr:contains(., 'some text') and @category='x']
+    
+#### Ordering by Score Combined With OR / UNION Conditions
+
+Queries that expect results to be sorted by score ("order by @jcr:score descending"),
+and use "union" or "or" conditions, may not return the result in the expected order,
+depending on the index(es) used. Example:
+
+    /jcr:root/conent/products/(indoor|outdoor)//*[jcr:contains(., 'test')] 
+    order by @jcr:score descending
+
+Here, the query is converted to a "union", and the result of both subqueries is combined.
+If the score for each subquery is not comparable (which is often the case for Lucene indexes),
+then the order of the results may not match the expected order.
+Instead of using path restrictions as above, it is most likely better to use a an additional
+condition in the query, and index that:
+
+    /jcr:root/content/products//*[jcr:contains(., 'test') and 
+    (@productTag='indoor' or @productTag='outdoor')] 
+    order by @jcr:score descending
+
+If this is not possible, then try to avoid using "union", and use an "or" condition as follows.
+This will only work for SQL-2 queries however:
+
+    select * from [nt:base] as a where contains(*, 'test') and issamenode(a, '/content') and 
+    ([jcr:path] like '/content/x800/%' or [jcr:path] like '/content/y900/%') 
+    order by [jcr:score] desc

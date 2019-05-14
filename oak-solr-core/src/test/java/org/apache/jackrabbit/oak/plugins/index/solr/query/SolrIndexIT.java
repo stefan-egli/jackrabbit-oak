@@ -27,10 +27,11 @@ import org.apache.jackrabbit.oak.Oak;
 import org.apache.jackrabbit.oak.api.ContentRepository;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
+import org.apache.jackrabbit.oak.plugins.index.aggregate.SimpleNodeAggregator;
 import org.apache.jackrabbit.oak.plugins.index.solr.configuration.DefaultSolrConfigurationProvider;
 import org.apache.jackrabbit.oak.plugins.index.solr.index.SolrIndexEditorProvider;
 import org.apache.jackrabbit.oak.plugins.index.solr.server.DefaultSolrServerProvider;
-import org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent;
+import org.apache.jackrabbit.oak.InitialContent;
 import org.apache.jackrabbit.oak.query.AbstractQueryTest;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.junit.Ignore;
@@ -41,7 +42,6 @@ import org.junit.rules.TestName;
 import static java.util.Arrays.asList;
 import static org.apache.jackrabbit.oak.api.Type.STRINGS;
 import static org.junit.Assert.*;
-import static org.junit.Assume.assumeTrue;
 
 /**
  * General query extensive testcase for {@link SolrQueryIndex}
@@ -73,7 +73,7 @@ public class SolrIndexIT extends AbstractQueryTest {
             DefaultSolrConfigurationProvider oakSolrConfigurationProvider = new DefaultSolrConfigurationProvider();
             return new Oak().with(new InitialContent())
                     .with(new OpenSecurityProvider())
-                    .with(new SolrQueryIndexProvider(solrServerProvider, oakSolrConfigurationProvider))
+                    .with(new SolrQueryIndexProvider(solrServerProvider, oakSolrConfigurationProvider, new SimpleNodeAggregator()))
                     .with(new SolrIndexEditorProvider(solrServerProvider, oakSolrConfigurationProvider))
                     .createContentRepository();
         } catch (Exception e) {
@@ -242,32 +242,26 @@ public class SolrIndexIT extends AbstractQueryTest {
 
     @Test
     public void testNativeMLTQuery() throws Exception {
-        // TODO: OAK-1819
-        assumeTrue(!System.getProperty("java.version").startsWith("1.8"));
-
-        String nativeQueryString = "select [jcr:path] from [nt:base] where native('solr', 'mlt?q=text:World&mlt.fl=text&mlt.mindf=0&mlt.mintf=0')";
+        String nativeQueryString = "select [jcr:path] from [nt:base] where native('solr', 'mlt?q=text:welt&mlt.fl=text&mlt.mindf=1&mlt.mintf=1')";
 
         Tree tree = root.getTree("/");
         Tree test = tree.addChild("test");
-        test.addChild("a").setProperty("text", "Hello World, today weather is nice");
-        test.addChild("b").setProperty("text", "Cheers World, today weather is quite nice");
-        test.addChild("c").setProperty("text", "Halo Welt, today sky is cloudy");
+        test.addChild("a").setProperty("text", "Hello World today weather is nice");
+        test.addChild("b").setProperty("text", "Cheers World today weather is quite nice");
+        test.addChild("c").setProperty("text", "Halo Welt today sky is cloudy");
         root.commit();
 
         Iterator<String> strings = executeQuery(nativeQueryString, "JCR-SQL2").iterator();
         assertTrue(strings.hasNext());
         assertEquals("/test/a", strings.next());
         assertTrue(strings.hasNext());
-        assertEquals("/test/c", strings.next());
+        assertEquals("/test/b", strings.next());
         assertFalse(strings.hasNext());
     }
 
     @Test
     public void testNativeMLTQueryWithStream() throws Exception {
-        // TODO: OAK-1819
-        assumeTrue(!System.getProperty("java.version").startsWith("1.8"));
-
-        String nativeQueryString = "select [jcr:path] from [nt:base] where native('solr', 'mlt?stream.body=world is nice today&mlt.fl=text&mlt.mindf=0&mlt.mintf=0')";
+        String nativeQueryString = "select [jcr:path] from [nt:base] where native('solr', 'mlt?stream.body=sky is cloudy&mlt.fl=text&mlt.mindf=0&mlt.mintf=0')";
 
         Tree tree = root.getTree("/");
         Tree test = tree.addChild("test");
@@ -280,7 +274,7 @@ public class SolrIndexIT extends AbstractQueryTest {
         assertTrue(strings.hasNext());
         assertEquals("/test/a", strings.next());
         assertTrue(strings.hasNext());
-        assertEquals("/test/c", strings.next());
+        assertEquals("/test/b", strings.next());
         assertFalse(strings.hasNext());
     }
 
@@ -405,6 +399,30 @@ public class SolrIndexIT extends AbstractQueryTest {
                 "/jcr:root//*[jcr:contains(@dc:format, 'type:appli*')]",
                 "xpath", ImmutableList.of("/test/a"));
 
+    }
+
+    @Test
+    public void testFulltextOperators() throws Exception {
+        Tree test = root.getTree("/").addChild("test");
+        test.addChild("a").setProperty("text", "the lazy fox jumped over the brown dog");
+        test.addChild("b").setProperty("text", "the lazy bones raised to eat a dog");
+        root.commit();
+
+        assertQuery(
+            "/jcr:root//*[jcr:contains(., 'lazy AND brown')]",
+            "xpath", ImmutableList.of("/test/a"));
+
+        assertQuery(
+            "/jcr:root//*[jcr:contains(., 'lazy OR eat')]",
+            "xpath", ImmutableList.of("/test/a", "/test/b"));
+
+        assertQuery(
+            "/jcr:root//*[jcr:contains(., 'lazy AND bones')]",
+            "xpath", ImmutableList.of("/test/b"));
+
+        assertQuery(
+            "/jcr:root//*[jcr:contains(., 'lazy OR dog')]",
+            "xpath", ImmutableList.of("/test/a", "/test/b"));
     }
 
     @Test
@@ -616,9 +634,33 @@ public class SolrIndexIT extends AbstractQueryTest {
 
         Iterator<String> result = executeQuery(xpath, XPATH).iterator();
         assertTrue(result.hasNext());
-        assertEquals("/test/content/sample1/jcr:content", result.next());
+        assertEquals("/test/content/sample1", result.next());
         assertTrue(result.hasNext());
-        assertEquals("/test/content/sample2/jcr:content", result.next());
+        assertEquals("/test/content/sample2", result.next());
+        assertFalse(result.hasNext());
+    }
+
+    @Test
+    public void testJcrContentNodeChild() throws Exception {
+
+        Tree index = root.getTree("/oak:index/" + TEST_INDEX_NAME);
+        assertTrue(index.exists());
+
+        Tree test = root.getTree("/").addChild("test");
+        Tree content = test.addChild("content");
+        Tree content1 = content.addChild("sample1").addChild("jcr:content");
+        content1.setProperty("text", "bar");
+        Tree content2 = content.addChild("sample2").addChild("jcr:content");
+        content2.setProperty("foo", "bar");
+        root.commit();
+
+        String xpath = "/jcr:root/test/content//element(*, nt:base)[jcr:contains(., 'bar')]";
+
+        Iterator<String> result = executeQuery(xpath, XPATH).iterator();
+        assertTrue(result.hasNext());
+        assertEquals("/test/content/sample1", result.next());
+        assertTrue(result.hasNext());
+        assertEquals("/test/content/sample2", result.next());
         assertFalse(result.hasNext());
     }
 

@@ -16,9 +16,6 @@
  */
 package org.apache.jackrabbit.oak.security.privilege;
 
-import javax.annotation.Nonnull;
-
-import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState;
@@ -31,6 +28,7 @@ import org.apache.jackrabbit.oak.spi.state.DefaultNodeStateDiff;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.util.Text;
+import org.jetbrains.annotations.NotNull;
 
 /**
  * JcrAllCommitHook is responsible for updating the jcr:all privilege definition
@@ -38,11 +36,10 @@ import org.apache.jackrabbit.util.Text;
  */
 class JcrAllCommitHook implements PostValidationHook, PrivilegeConstants {
 
-    @Nonnull
+    @NotNull
     @Override
     public NodeState processCommit(
-            NodeState before, NodeState after, CommitInfo info)
-            throws CommitFailedException {
+            NodeState before, NodeState after, CommitInfo info) {
         NodeBuilder builder = after.builder();
         after.compareAgainstBaseState(before, new PrivilegeDiff(null, null, builder));
         return builder.getNodeState();

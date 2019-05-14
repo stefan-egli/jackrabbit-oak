@@ -19,6 +19,10 @@
 
 package org.apache.jackrabbit.oak.segment;
 
+import java.util.function.Supplier;
+
+import org.apache.jackrabbit.oak.segment.file.tar.GCGeneration;
+
 /**
  * SegmentNodeStoreMonitor is notified for commit related operations performed by SegmentNodeStore.
  */
@@ -26,56 +30,42 @@ public interface SegmentNodeStoreMonitor {
 
     SegmentNodeStoreMonitor DEFAULT = new SegmentNodeStoreMonitor() {
         @Override
-        public void onCommit() {
+        public void onCommit(Thread t, long time) {
 
         }
 
         @Override
-        public void onCommitQueued() {
+        public void onCommitQueued(Thread t, Supplier<GCGeneration> gcGeneration) {
 
         }
         
         @Override
-        public void onCommitDequeued() {
-            
-        }
-        
-        @Override
-        public void committedAfter(long time) {
-            
-        }
-        
-        @Override
-        public void dequeuedAfter(long time) {
+        public void onCommitDequeued(Thread t, long time) {
             
         }
     };
 
     /**
-     * Notifies the monitor when a new commit was persisted right away
+     * Notifies the monitor when a new commit was persisted.
+     * @param t the thread which initiated the write
+     * @param time the time spent for persisting the commit
      */
-    void onCommit();
+    void onCommit(Thread t, long time);
 
     /**
      * Notifies the monitor when a new commit couldn't be persisted, but was
-     * queued for later retry
+     * queued for later retry.
+     * 
+     * @param t the thread which initiated the write
+     * @param gcGeneration the commit's gc generation
      */
-    void onCommitQueued();
+    void onCommitQueued(Thread t, Supplier<GCGeneration> gcGeneration);
     
     /**
      * Notifies the monitor when a queued commit was dequeued for processing.
+     * @param t the thread which initiated the write
+     * @param time the time spent in the queue
      */
-    void onCommitDequeued();
+    void onCommitDequeued(Thread t, long time);
 
-    /**
-     * Notifies the monitor time spent (excluding queuing time) for a commit.
-     * @param time the time spent
-     */
-    void committedAfter(long time);
-    
-    /**
-     * Notifies the monitor time spent in the queue for a commit, before being processed.
-     * @param time the time spent
-     */
-    void dequeuedAfter(long time);
 }

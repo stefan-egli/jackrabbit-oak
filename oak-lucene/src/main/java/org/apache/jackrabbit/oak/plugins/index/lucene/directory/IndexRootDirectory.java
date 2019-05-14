@@ -29,8 +29,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.CheckForNull;
-
 import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ArrayListMultimap;
@@ -42,9 +40,10 @@ import com.google.common.hash.Hashing;
 import org.apache.commons.io.FileUtils;
 import org.apache.jackrabbit.oak.commons.IOUtils;
 import org.apache.jackrabbit.oak.commons.PathUtils;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition;
 import org.apache.jackrabbit.oak.plugins.index.lucene.hybrid.NRTIndex;
+import org.apache.jackrabbit.oak.plugins.index.search.IndexDefinition;
 import org.apache.jackrabbit.oak.stats.Clock;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,8 +76,14 @@ public class IndexRootDirectory {
     private final File indexRootDir;
 
     public IndexRootDirectory(File indexRootDir) throws IOException {
+        this(indexRootDir, true);
+    }
+
+    public IndexRootDirectory(File indexRootDir, boolean gcOnStart) throws IOException {
         this.indexRootDir = indexRootDir;
-        gcIndexDirs();
+        if (gcOnStart) {
+            gcIndexDirs();
+        }
     }
 
     public long getSize(){
@@ -127,9 +132,9 @@ public class IndexRootDirectory {
      */
     public List<LocalIndexDir> getAllLocalIndexes() throws IOException {
         Map<String, List<LocalIndexDir>> mapping = getIndexesPerPath();
-        List<LocalIndexDir> result = Lists.newArrayListWithCapacity(mapping.size());
+        List<LocalIndexDir> result = new ArrayList<>();
         for (Map.Entry<String, List<LocalIndexDir>> e : mapping.entrySet()){
-            result.add(e.getValue().get(0));
+            result.addAll(e.getValue());
         }
         return result;
     }
@@ -223,7 +228,7 @@ public class IndexRootDirectory {
             pathToDirMap.get(localIndexDir.getJcrPath()).add(localIndexDir);
         }
 
-        Map<String, List<LocalIndexDir>> result = Maps.newHashMap();
+        Map<String, List<LocalIndexDir>> result = Maps.newTreeMap();
         for (Map.Entry<String, Collection<LocalIndexDir>> e : pathToDirMap.asMap().entrySet()){
             List<LocalIndexDir> sortedDirs = new ArrayList<>(e.getValue());
             Collections.sort(sortedDirs, Collections.<LocalIndexDir>reverseOrder());
@@ -290,7 +295,7 @@ public class IndexRootDirectory {
         return size;
     }
 
-    @CheckForNull
+    @Nullable
     private LocalIndexDir findMatchingIndexDir(File dir) throws IOException {
         //Resolve to canonical file so that equals can work reliable
         dir = dir.getCanonicalFile();

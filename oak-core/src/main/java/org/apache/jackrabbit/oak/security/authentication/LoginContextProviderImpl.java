@@ -20,8 +20,6 @@ import java.security.AccessController;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
 import javax.jcr.Credentials;
 import javax.security.auth.Subject;
 import javax.security.auth.callback.CallbackHandler;
@@ -35,8 +33,11 @@ import org.apache.jackrabbit.oak.spi.security.authentication.ConfigurationUtil;
 import org.apache.jackrabbit.oak.spi.security.authentication.JaasLoginContext;
 import org.apache.jackrabbit.oak.spi.security.authentication.LoginContext;
 import org.apache.jackrabbit.oak.spi.security.authentication.LoginContextProvider;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleMonitor;
 import org.apache.jackrabbit.oak.spi.security.authentication.PreAuthContext;
 import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,22 +55,25 @@ class LoginContextProviderImpl implements LoginContextProvider {
     private final ContentRepository contentRepository;
     private final SecurityProvider securityProvider;
     private final Whiteboard whiteboard;
+    private final LoginModuleMonitor loginModuleMonitor;
 
     private Configuration configuration;
 
     LoginContextProviderImpl(String appName, ConfigurationParameters params,
                              ContentRepository contentRepository,
                              SecurityProvider securityProvider,
-                             Whiteboard whiteboard) {
+                             Whiteboard whiteboard,
+                             LoginModuleMonitor loginModuleMonitor) {
         this.appName = appName;
         this.params = params;
         this.contentRepository = contentRepository;
         this.securityProvider = securityProvider;
         this.whiteboard = whiteboard;
+        this.loginModuleMonitor = loginModuleMonitor;
     }
 
     @Override
-    @Nonnull
+    @NotNull
     public LoginContext getLoginContext(Credentials credentials, String workspaceName)
             throws LoginException {
         Subject subject = getSubject();
@@ -86,7 +90,7 @@ class LoginContextProviderImpl implements LoginContextProvider {
     }
 
     //------------------------------------------------------------< private >---
-    @CheckForNull
+    @Nullable
     private static Subject getSubject() {
         Subject subject = null;
         try {
@@ -97,12 +101,12 @@ class LoginContextProviderImpl implements LoginContextProvider {
         return subject;
     }
 
-    @Nonnull
+    @NotNull
     private CallbackHandler getCallbackHandler(Credentials credentials, String workspaceName) {
-        return new CallbackHandlerImpl(credentials, workspaceName, contentRepository, securityProvider, whiteboard);
+        return new CallbackHandlerImpl(credentials, workspaceName, contentRepository, securityProvider, whiteboard, loginModuleMonitor);
     }
 
-    @Nonnull
+    @NotNull
     private Configuration getConfiguration() {
         if (configuration == null) {
             Configuration loginConfig = null;
@@ -125,9 +129,7 @@ class LoginContextProviderImpl implements LoginContextProvider {
                         log.warn("No configuration found for application {} though fetching JAAS " +
                                 "configuration from SPI {} is enabled.", appName, configSpiName);
                     }
-                } catch (NoSuchAlgorithmException e) {
-                    log.warn("Error fetching JAAS config from SPI {}", configSpiName, e);
-                } catch (NoSuchProviderException e) {
+                } catch (NoSuchAlgorithmException | NoSuchProviderException e) {
                     log.warn("Error fetching JAAS config from SPI {}", configSpiName, e);
                 }
             }

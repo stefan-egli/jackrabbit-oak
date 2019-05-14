@@ -21,8 +21,11 @@ package org.apache.jackrabbit.oak.plugins.index.lucene;
 
 import javax.management.openmbean.TabularData;
 
-import aQute.bnd.annotation.ProviderType;
+import org.osgi.annotation.versioning.ProviderType;
 
+/**
+ * Statistics for the copy-on-read mechanism.
+ */
 @SuppressWarnings("UnusedDeclaration")
 @ProviderType
 public interface CopyOnReadStatsMBean {

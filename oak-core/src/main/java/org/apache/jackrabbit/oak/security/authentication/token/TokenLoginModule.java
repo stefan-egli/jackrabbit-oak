@@ -22,9 +22,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.jcr.Credentials;
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.UnsupportedCallbackException;
@@ -40,6 +37,8 @@ import org.apache.jackrabbit.oak.spi.security.authentication.callback.TokenProvi
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenInfo;
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenProvider;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -154,6 +153,7 @@ public final class TokenLoginModule extends AbstractLoginModule {
         if (tokenCredentials != null && userId != null) {
             Set<? extends Principal> principals = (principal != null) ? getPrincipals(principal) : getPrincipals(userId);
             updateSubject(tokenCredentials, getAuthInfo(tokenInfo, principals), principals);
+            clearState();
             return true;
         }
         try{
@@ -167,20 +167,15 @@ public final class TokenLoginModule extends AbstractLoginModule {
                     TokenInfo ti = tokenProvider.createToken(shared);
                     if (ti != null) {
                         TokenCredentials tc = new TokenCredentials(ti.getToken());
-                        Map<String, String> attributes = ti.getPrivateAttributes();
-                        for (String name : attributes.keySet()) {
-                            tc.setAttribute(name, attributes.get(name));
-                        }
-                        attributes = ti.getPublicAttributes();
-                        for (String name : attributes.keySet()) {
-                            tc.setAttribute(name, attributes.get(name));
-                        }
-                        sharedState.put(SHARED_KEY_ATTRIBUTES, attributes);
+                        ti.getPrivateAttributes().forEach((key, value) -> tc.setAttribute(key, value));
+                        ti.getPublicAttributes().forEach((key, value) -> tc.setAttribute(key, value));
+                        sharedState.put(SHARED_KEY_ATTRIBUTES, ti.getPublicAttributes());
                         updateSubject(tc, null, null);
                     } else {
                         // failed to create token -> fail commit()
+                        onError();
                         Object logId = (userId != null) ? userId : sharedState.get(SHARED_KEY_LOGIN_NAME);
-                        log.debug("TokenProvider failed to create a login token for user " + logId);
+                        log.error("TokenProvider failed to create a login token for user " + logId);
                         throw new LoginException("Failed to create login token for user " + logId);
                     }
                 }
@@ -194,10 +189,10 @@ public final class TokenLoginModule extends AbstractLoginModule {
     }
 
     //------------------------------------------------< AbstractLoginModule >---
-    @Nonnull
+    @NotNull
     @Override
     protected Set<Class> getSupportedCredentials() {
-        return Collections.<Class>singleton(TokenCredentials.class);
+        return Collections.singleton(TokenCredentials.class);
     }
 
     @Override
@@ -207,6 +202,7 @@ public final class TokenLoginModule extends AbstractLoginModule {
         tokenCredentials = null;
         tokenInfo = null;
         userId = null;
+        tokenProvider = null;
     }
 
     //------------------------------------------------------------< private >---
@@ -215,7 +211,7 @@ public final class TokenLoginModule extends AbstractLoginModule {
      * Retrieve the token provider
      * @return the token provider or {@code null}.
      */
-    @CheckForNull
+    @Nullable
     private TokenProvider getTokenProvider() {
         TokenProvider provider = null;
         SecurityProvider securityProvider = getSecurityProvider();
@@ -229,10 +225,9 @@ public final class TokenLoginModule extends AbstractLoginModule {
                 TokenProviderCallback tcCallback = new TokenProviderCallback();
                 callbackHandler.handle(new Callback[] {tcCallback});
                 provider = tcCallback.getTokenProvider();
-            } catch (IOException e) {
-                log.warn(e.getMessage());
-            } catch (UnsupportedCallbackException e) {
-                log.warn(e.getMessage());
+            } catch (IOException | UnsupportedCallbackException e) {
+                onError();
+                log.error(e.getMessage(), e);
             }
         }
         return provider;
@@ -245,21 +240,18 @@ public final class TokenLoginModule extends AbstractLoginModule {
      * @param tokenInfo The tokenInfo to retrieve attributes from.
      * @return The {@code AuthInfo} resulting from the successful login.
      */
-    @CheckForNull
-    private AuthInfo getAuthInfo(@Nullable TokenInfo tokenInfo, @Nonnull Set<? extends Principal> principals) {
+    @Nullable
+    private static AuthInfo getAuthInfo(@Nullable TokenInfo tokenInfo, @NotNull Set<? extends Principal> principals) {
         if (tokenInfo != null) {
-            Map<String, Object> attributes = new HashMap<String, Object>();
-            Map<String, String> publicAttributes = tokenInfo.getPublicAttributes();
-            for (String attrName : publicAttributes.keySet()) {
-                attributes.put(attrName, publicAttributes.get(attrName));
-            }
+            Map<String, Object> attributes = new HashMap<>();
+            tokenInfo.getPublicAttributes().forEach((key, value) -> attributes.put(key, value));
             return new AuthInfoImpl(tokenInfo.getUserId(), attributes, principals);
         } else {
             return null;
         }
     }
 
-    private void updateSubject(@Nonnull TokenCredentials tc, @Nullable AuthInfo authInfo,
+    private void updateSubject(@NotNull TokenCredentials tc, @Nullable AuthInfo authInfo,
                                @Nullable Set<? extends Principal> principals) {
         if (!subject.isReadOnly()) {
             subject.getPublicCredentials().add(tc);

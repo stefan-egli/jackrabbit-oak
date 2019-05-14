@@ -39,18 +39,27 @@ import com.google.common.base.Throwables;
 import com.google.common.base.Ticker;
 import com.google.common.collect.Maps;
 import org.apache.jackrabbit.oak.stats.Clock;
+import org.apache.jackrabbit.oak.stats.MeterStats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
 public class TrackingCorruptIndexHandler implements CorruptIndexHandler {
+
+    static final String CORRUPT_INDEX_METER_NAME = "corrupt-index";
+
     private final Logger log = LoggerFactory.getLogger(getClass());
     private Clock clock = Clock.SIMPLE;
     private long errorWarnIntervalMillis = TimeUnit.MINUTES.toMillis(15);
     private long indexerCycleCount;
     private long corruptIntervalMillis = TimeUnit.MINUTES.toMillis(30);
     private final Map<String, CorruptIndexInfo> indexes = Maps.newConcurrentMap();
+    private MeterStats meter;
+
+    void setMeterStats(MeterStats meter) {
+        this.meter = meter;
+    }
 
     public Map<String, CorruptIndexInfo> getCorruptIndexData(String asyncName){
         if (corruptIntervalMillis <= 0){
@@ -84,6 +93,9 @@ public class TrackingCorruptIndexHandler implements CorruptIndexHandler {
                 log.info("Index at [{}] which was so far failing {} is now working again.", info.path, info.getStats());
             }
         }
+        if (meter != null) {
+            meter.mark(indexes.size());
+        }
     }
 
     public boolean isFailing(String asyncName) {
@@ -106,6 +118,9 @@ public class TrackingCorruptIndexHandler implements CorruptIndexHandler {
 
     @Override
     public void indexUpdateFailed(String async, String indexPath, Exception e) {
+        if (meter != null) {
+            meter.mark();
+        }
         getOrCreateInfo(async, indexPath).addFailure(e);
     }
 

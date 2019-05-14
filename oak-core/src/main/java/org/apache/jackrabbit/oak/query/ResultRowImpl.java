@@ -18,6 +18,7 @@ package org.apache.jackrabbit.oak.query;
 
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Map;
 
 import org.apache.jackrabbit.JcrConstants;
 import org.apache.jackrabbit.oak.api.PropertyValue;
@@ -25,8 +26,8 @@ import org.apache.jackrabbit.oak.api.ResultRow;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.query.ast.ColumnImpl;
 import org.apache.jackrabbit.oak.query.ast.OrderingImpl;
-import org.apache.jackrabbit.oak.query.fulltext.SimpleExcerptProvider;
-import org.apache.jackrabbit.oak.spi.query.PropertyValues;
+import org.apache.jackrabbit.oak.plugins.memory.PropertyValues;
+import org.apache.jackrabbit.oak.spi.query.QueryConstants;
 
 /**
  * A query result row that keeps all data (for this row only) in memory.
@@ -108,13 +109,13 @@ public class ResultRowImpl implements ResultRow {
         // OAK-318:
         // somebody might call rep:excerpt(text)
         // even though the query doesn't contain that column
-        if (columnName.startsWith(QueryImpl.REP_EXCERPT)) {
-            int columnIndex = query.getColumnIndex(QueryImpl.REP_EXCERPT);
+        if (columnName.startsWith(QueryConstants.REP_EXCERPT)) {
+            int columnIndex = query.getColumnIndex(QueryConstants.REP_EXCERPT);
             PropertyValue indexExcerptValue = null;
             if (columnIndex >= 0) {
                 indexExcerptValue = values[columnIndex];
                 if (indexExcerptValue != null) {
-                    if (QueryImpl.REP_EXCERPT.equals(columnName) || SimpleExcerptProvider.REP_EXCERPT_FN.equals(columnName)) {
+                    if (QueryConstants.REP_EXCERPT.equals(columnName) || SimpleExcerptProvider.REP_EXCERPT_FN.equals(columnName)) {
                         return SimpleExcerptProvider.getExcerpt(indexExcerptValue);
                     }
                 }
@@ -264,4 +265,16 @@ public class ResultRowImpl implements ResultRow {
 
     }
 
+    static ResultRowImpl getMappingResultRow(ResultRowImpl delegate, final Map<String, String> columnToFacetMap) {
+        if (columnToFacetMap.size() == 0) {
+            return delegate;
+        }
+
+        PropertyValue[] mappedVals = delegate.getValues();
+        for (Map.Entry<String, String> entry : columnToFacetMap.entrySet()) {
+            mappedVals[delegate.query.getColumnIndex(entry.getKey())]   = PropertyValues.newString(entry.getValue());
+        }
+        return new ResultRowImpl(delegate.query, delegate.trees, mappedVals,
+                delegate.distinctValues, delegate.orderValues);
+    }
 }

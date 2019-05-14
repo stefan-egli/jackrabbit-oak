@@ -20,9 +20,13 @@ package org.apache.jackrabbit.oak.security.authorization.restriction;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.google.common.base.Objects;
+import com.google.common.collect.ImmutableSet;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -388,6 +392,24 @@ public class GlobPatternTest {
         for (String toTest : tests.keySet()) {
             assertTrue(gp + " : " + toTest, tests.get(toTest) == gp.matches(toTest));
         }
+
+        gp = GlobPattern.create("/a/b/c", "/d/");
+
+        tests = new HashMap<String,Boolean>();
+        tests.put("/", false);
+        tests.put("/a", false);
+        tests.put("/a/b/c", false);
+        tests.put("/a/b/c/d", false);
+        tests.put("/a/b/c/d/e", true);
+        tests.put("/a/b/c/d/e/f", true);
+        tests.put("/a/b/cd", false);
+        tests.put("/a/b/cd/e", false);
+        tests.put("/a/b/cd/e/f", false);
+        tests.put("/a/b/cde", false);
+
+        for (String toTest : tests.keySet()) {
+            assertTrue(gp + " : " + toTest, tests.get(toTest) == gp.matches(toTest));
+        }
     }
 
     @Test
@@ -405,5 +427,33 @@ public class GlobPatternTest {
         } catch (IllegalArgumentException e) {
             // success
         };
+    }
+
+    @Test
+    public void testMatches() {
+        assertFalse(GlobPattern.create("/a/b/c/d", "/*").matches());
+    }
+
+    @Test
+    public void testHashCode() {
+        GlobPattern pattern = GlobPattern.create("/a/b/c/d", "/*");
+        assertEquals(Objects.hashCode("/a/b/c/d", "/*"), pattern.hashCode());
+    }
+
+    @Test
+    public void testEquals() {
+        GlobPattern pattern = GlobPattern.create("/a/b/c/d", "/*");
+
+        assertEquals(pattern, pattern);
+        assertEquals(pattern, GlobPattern.create("/a/b/c/d", "/*"));
+    }
+
+    @Test
+    public void testNotEquals() {
+        GlobPattern pattern = GlobPattern.create("/a/b/c/d", "/*");
+
+        assertNotEquals(pattern, GlobPattern.create("/a/b/c", "/*"));
+        assertNotEquals(pattern, GlobPattern.create("/a/b/c/d", "*"));
+        assertNotEquals(pattern, new PrefixPattern(ImmutableSet.of("/a/b/c", "/*")));
     }
 }

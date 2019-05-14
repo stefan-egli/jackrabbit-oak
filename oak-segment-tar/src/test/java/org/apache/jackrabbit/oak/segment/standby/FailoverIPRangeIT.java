@@ -27,12 +27,12 @@ import static org.junit.Assume.assumeFalse;
 
 import java.io.File;
 
+import org.apache.jackrabbit.oak.commons.junit.TemporaryPort;
 import org.apache.jackrabbit.oak.segment.SegmentNodeStoreBuilders;
 import org.apache.jackrabbit.oak.segment.file.FileStore;
 import org.apache.jackrabbit.oak.segment.standby.client.StandbyClientSync;
 import org.apache.jackrabbit.oak.segment.standby.server.StandbyServerSync;
 import org.apache.jackrabbit.oak.segment.test.TemporaryFileStore;
-import org.apache.jackrabbit.oak.commons.junit.TemporaryPort;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
 import org.junit.Rule;
 import org.junit.Test;
@@ -157,8 +157,13 @@ public class FailoverIPRangeIT extends TestBase {
 
         NodeStore store = SegmentNodeStoreBuilders.builder(storeS).build();
         try (
-                StandbyServerSync serverSync = new StandbyServerSync(serverPort.getPort(), storeS, ipRanges);
-                StandbyClientSync clientSync = new StandbyClientSync(host, serverPort.getPort(), storeC, false, getClientTimeout(), false)
+            StandbyServerSync serverSync = StandbyServerSync.builder()
+                .withPort(serverPort.getPort())
+                .withFileStore(storeS)
+                .withBlobChunkSize(MB)
+                .withAllowedClientIPRanges(ipRanges)
+                .build();
+            StandbyClientSync clientSync = new StandbyClientSync(host, serverPort.getPort(), storeC, false, getClientTimeout(), false, folder.newFolder())
         ) {
             serverSync.start();
             addTestContent(store, "server");

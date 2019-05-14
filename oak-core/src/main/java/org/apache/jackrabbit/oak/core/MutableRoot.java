@@ -31,7 +31,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import javax.annotation.Nonnull;
 import javax.security.auth.Subject;
 
 import com.google.common.collect.ImmutableMap;
@@ -40,6 +39,7 @@ import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.ContentSession;
 import org.apache.jackrabbit.oak.api.QueryEngine;
 import org.apache.jackrabbit.oak.api.Root;
+import org.apache.jackrabbit.oak.commons.LazyValue;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.plugins.index.diffindex.UUIDDiffIndexProviderWrapper;
 import org.apache.jackrabbit.oak.query.ExecutionContext;
@@ -54,9 +54,10 @@ import org.apache.jackrabbit.oak.spi.commit.EditorHook;
 import org.apache.jackrabbit.oak.spi.commit.EmptyHook;
 import org.apache.jackrabbit.oak.spi.commit.MoveTracker;
 import org.apache.jackrabbit.oak.spi.commit.PostValidationHook;
+import org.apache.jackrabbit.oak.spi.commit.ResetCommitAttributeHook;
+import org.apache.jackrabbit.oak.spi.commit.SimpleCommitContext;
 import org.apache.jackrabbit.oak.spi.commit.ValidatorProvider;
 import org.apache.jackrabbit.oak.spi.query.QueryIndexProvider;
-import org.apache.jackrabbit.oak.spi.security.Context;
 import org.apache.jackrabbit.oak.spi.security.SecurityConfiguration;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authorization.AuthorizationConfiguration;
@@ -64,6 +65,7 @@ import org.apache.jackrabbit.oak.spi.security.authorization.permission.Permissio
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
+import org.jetbrains.annotations.NotNull;
 
 class MutableRoot implements Root {
 
@@ -160,7 +162,7 @@ class MutableRoot implements Root {
         this.session = checkNotNull(session);
 
         builder = store.getRoot().builder();
-        secureBuilder = new SecureNodeBuilder(builder, permissionProvider, getAcContext());
+        secureBuilder = new SecureNodeBuilder(builder, permissionProvider);
         rootTree = new MutableTree(this, secureBuilder, lastMove);
     }
 
@@ -176,7 +178,7 @@ class MutableRoot implements Root {
 
     //---------------------------------------------------------------< Root >---
 
-    @Nonnull
+    @NotNull
     @Override
     public ContentSession getContentSession() {
         return session;
@@ -212,9 +214,9 @@ class MutableRoot implements Root {
         return success;
     }
 
-    @Nonnull
+    @NotNull
     @Override
-    public MutableTree getTree(@Nonnull String path) {
+    public MutableTree getTree(@NotNull String path) {
         checkLive();
         return rootTree.getTree(path);
     }
@@ -241,7 +243,7 @@ class MutableRoot implements Root {
     }
 
     @Override
-    public void commit(@Nonnull Map<String, Object> info) throws CommitFailedException {
+    public void commit(@NotNull Map<String, Object> info) throws CommitFailedException {
         checkLive();
         ContentSession session = getContentSession();
         CommitInfo commitInfo = new CommitInfo(
@@ -273,6 +275,8 @@ class MutableRoot implements Root {
         hooks.add(hook);
 
         List<CommitHook> postValidationHooks = new ArrayList<CommitHook>();
+        List<ValidatorProvider> validators = new ArrayList<>();
+
         for (SecurityConfiguration sc : securityProvider.getConfigurations()) {
             for (CommitHook ch : sc.getCommitHooks(workspaceName)) {
                 if (ch instanceof PostValidationHook) {
@@ -282,10 +286,11 @@ class MutableRoot implements Root {
                 }
             }
 
-            List<? extends ValidatorProvider> validators = sc.getValidators(workspaceName, subject.getPrincipals(), moveTracker);
-            if (!validators.isEmpty()) {
-                hooks.add(new EditorHook(CompositeEditorProvider.compose(validators)));
-            }
+            validators.addAll(sc.getValidators(workspaceName, subject.getPrincipals(), moveTracker));
+        }
+
+        if (!validators.isEmpty()) {
+            hooks.add(new EditorHook(CompositeEditorProvider.compose(validators)));
         }
         hooks.addAll(postValidationHooks);
 
@@ -298,7 +303,7 @@ class MutableRoot implements Root {
         return modCount > 0;
     }
 
-    @Nonnull
+    @NotNull
     @Override
     public QueryEngine getQueryEngine() {
         checkLive();
@@ -316,14 +321,14 @@ class MutableRoot implements Root {
         };
     }
 
-    @Override @Nonnull
-    public Blob createBlob(@Nonnull InputStream inputStream) throws IOException {
+    @Override @NotNull
+    public Blob createBlob(@NotNull InputStream inputStream) throws IOException {
         checkLive();
         return store.createBlob(checkNotNull(inputStream));
     }
 
     @Override
-    public Blob getBlob(@Nonnull String reference) {
+    public Blob getBlob(@NotNull String reference) {
         return store.getBlob(reference);
     }
 
@@ -335,7 +340,7 @@ class MutableRoot implements Root {
      *
      * @return base node state
      */
-    @Nonnull
+    @NotNull
     NodeState getBaseState() {
         return builder.getBaseState();
     }
@@ -352,17 +357,12 @@ class MutableRoot implements Root {
      *
      * @return root node state
      */
-    @Nonnull
+    @NotNull
     private NodeState getRootState() {
         return builder.getNodeState();
     }
 
-    @Nonnull
-    private Context getAcContext() {
-        return getAcConfig().getContext();
-    }
-
-    @Nonnull
+    @NotNull
     private AuthorizationConfiguration getAcConfig() {
         return securityProvider.getConfiguration(AuthorizationConfiguration.class);
     }

@@ -29,22 +29,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.jackrabbit.oak.benchmark.authentication.external.ExternalLoginTest;
-import org.apache.jackrabbit.oak.benchmark.authentication.external.ListIdentitiesTest;
-import org.apache.jackrabbit.oak.benchmark.authentication.external.PrincipalNameResolutionTest;
-import org.apache.jackrabbit.oak.benchmark.authentication.external.SyncAllExternalUsersTest;
-import org.apache.jackrabbit.oak.benchmark.authentication.external.SyncExternalUsersTest;
-import org.apache.jackrabbit.oak.benchmark.authorization.AceCreationTest;
-import org.apache.jackrabbit.oak.benchmark.wikipedia.WikipediaImport;
-import org.apache.jackrabbit.oak.fixture.JackrabbitRepositoryFixture;
-import org.apache.jackrabbit.oak.fixture.OakFixture;
-import org.apache.jackrabbit.oak.fixture.OakRepositoryFixture;
-import org.apache.jackrabbit.oak.fixture.RepositoryFixture;
-import org.apache.jackrabbit.oak.plugins.metric.MetricStatisticsProvider;
-import org.apache.jackrabbit.oak.spi.xml.ImportBehavior;
-import org.apache.jackrabbit.oak.stats.StatisticsProvider;
-
 import com.codahale.metrics.ConsoleReporter;
 import com.codahale.metrics.Counting;
 import com.codahale.metrics.Metric;
@@ -53,10 +37,26 @@ import com.codahale.metrics.MetricRegistry;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.MoreExecutors;
-
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
+import org.apache.commons.io.FileUtils;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.ExternalLoginTest;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.ListIdentitiesTest;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.PrincipalNameResolutionTest;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.SyncAllExternalUsersTest;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.SyncAllUsersTest;
+import org.apache.jackrabbit.oak.benchmark.authentication.external.SyncExternalUsersTest;
+import org.apache.jackrabbit.oak.benchmark.authorization.AceCreationTest;
+import org.apache.jackrabbit.oak.benchmark.authorization.CanReadNonExisting;
+import org.apache.jackrabbit.oak.benchmark.wikipedia.WikipediaImport;
+import org.apache.jackrabbit.oak.fixture.JackrabbitRepositoryFixture;
+import org.apache.jackrabbit.oak.fixture.OakFixture;
+import org.apache.jackrabbit.oak.fixture.OakRepositoryFixture;
+import org.apache.jackrabbit.oak.fixture.RepositoryFixture;
+import org.apache.jackrabbit.oak.plugins.metric.MetricStatisticsProvider;
+import org.apache.jackrabbit.oak.spi.xml.ImportBehavior;
+import org.apache.jackrabbit.oak.stats.StatisticsProvider;
 
 public class BenchmarkRunner {
 
@@ -85,6 +85,14 @@ public class BenchmarkRunner {
                 .withOptionalArg().defaultsTo("");
         OptionSpec<String> rdbjdbctableprefix = parser.accepts("rdbjdbctableprefix", "RDB JDBC table prefix")
                 .withOptionalArg().defaultsTo("");
+
+        OptionSpec<String> azureConnectionString = parser.accepts("azure", "Azure Connection String")
+                .withOptionalArg().defaultsTo("DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;");
+        OptionSpec<String> azureContainerName = parser.accepts("azureContainerName", "Azure container name")
+                .withOptionalArg().defaultsTo("oak");
+        OptionSpec<String> azureRootPath = parser.accepts("azureRootPath", "Azure root path")
+                .withOptionalArg().defaultsTo("/oak");
+
         OptionSpec<Boolean> mmap = parser.accepts("mmap", "TarMK memory mapping")
                 .withOptionalArg().ofType(Boolean.class)
                 .defaultsTo("64".equals(System.getProperty("sun.arch.data.model")));
@@ -120,7 +128,11 @@ public class BenchmarkRunner {
         OptionSpec<Long> expiration = parser.accepts("expiration", "Expiration time (e.g. principal cache.")
                         .withOptionalArg().ofType(Long.class).defaultsTo(AbstractLoginTest.NO_CACHE);
         OptionSpec<Integer> numberOfGroups = parser.accepts("numberOfGroups", "Number of groups to create.")
-                        .withOptionalArg().ofType(Integer.class).defaultsTo(LoginWithMembershipTest.NUMBER_OF_GROUPS_DEFAULT);
+                .withOptionalArg().ofType(Integer.class).defaultsTo(LoginWithMembershipTest.NUMBER_OF_GROUPS_DEFAULT);
+        OptionSpec<Integer> queryMaxCount = parser.accepts("queryMaxCount", "Max number of query results.")
+                .withOptionalArg().ofType(Integer.class).defaultsTo(Integer.MAX_VALUE);
+        OptionSpec<Boolean> declaredMembership = parser.accepts("declaredMembership", "Only look for declared membership.")
+                .withOptionalArg().ofType(Boolean.class).defaultsTo(true);
         OptionSpec<Integer> numberOfInitialAce = parser.accepts("numberOfInitialAce", "Number of ACE to create before running the test.")
                 .withOptionalArg().ofType(Integer.class).defaultsTo(AceCreationTest.NUMBER_OF_INITIAL_ACE_DEFAULT);
         OptionSpec<Boolean> nestedGroups = parser.accepts("nestedGroups", "Use nested groups.")
@@ -162,12 +174,34 @@ public class BenchmarkRunner {
         OptionSpec<Boolean> transientWrites = parser.accepts("transient", "Do not save data.")
                 .withOptionalArg().ofType(Boolean.class)
                 .defaultsTo(Boolean.FALSE);
-        OptionSpec<Integer> mounts = parser.accepts("mounts", "Number of mounts for multiplexing node store.")
-                .withOptionalArg().ofType(Integer.class).defaultsTo(2);
-        OptionSpec<Integer> pathsPerMount = parser.accepts("pathsPerMount", "Number of paths per one mount.")
-                .withOptionalArg().ofType(Integer.class).defaultsTo(1000);
+        OptionSpec<Integer> vgcMaxAge = parser.accepts("vgcMaxAge", "Continuous DocumentNodeStore VersionGC max age in sec (RDB only)")
+                .withRequiredArg().ofType(Integer.class).defaultsTo(-1);
+        OptionSpec<Integer> coldSyncInterval = parser.accepts("coldSyncInterval", "interval between sync cycles in sec (Segment-Tar-Cold only)")
+                .withRequiredArg().ofType(Integer.class).defaultsTo(5);
+        OptionSpec<Boolean> coldUseDataStore = parser
+                .accepts("useDataStore",
+                        "Whether to use a datastore in the cold standby topology (Segment-Tar-Cold only)")
+                .withOptionalArg().ofType(Boolean.class)
+                .defaultsTo(Boolean.TRUE);
+        OptionSpec<Boolean> coldShareDataStore = parser
+                .accepts("shareDataStore",
+                        "Whether to share the datastore for primary and standby in the cold standby topology (Segment-Tar-Cold only)")
+                .withOptionalArg().ofType(Boolean.class)
+                .defaultsTo(Boolean.FALSE);
+        OptionSpec<Boolean> coldOneShotRun = parser
+                .accepts("oneShotRun",
+                        "Whether to do a continuous sync between client and server or sync only once (Segment-Tar-Cold only)")
+                .withOptionalArg().ofType(Boolean.class)
+                .defaultsTo(Boolean.FALSE);
+        OptionSpec<Boolean> coldSecure = parser
+                .accepts("secure",
+                        "Whether to enable secure communication between primary and standby in the cold standby topology (Segment-Tar-Cold only)")
+                .withOptionalArg().ofType(Boolean.class)
+                .defaultsTo(Boolean.FALSE);
+        
+        OptionSpec<?> verbose = parser.accepts("verbose", "Enable verbose output");
         OptionSpec<String> nonOption = parser.nonOptions();
-        OptionSpec help = parser.acceptsAll(asList("h", "?", "help"), "show help").forHelp();
+        OptionSpec<?> help = parser.acceptsAll(asList("h", "?", "help"), "show help").forHelp();
         OptionSet options = parser.parse(args);
 
         if(options.has(help)){
@@ -200,18 +234,29 @@ public class BenchmarkRunner {
                         cacheSize * MB),
                 OakRepositoryFixture.getSegmentTar(base.value(options), 256, cacheSize,
                         mmap.value(options)),
-                OakRepositoryFixture.getSegmentTarWithBlobStore(base.value(options), 256, cacheSize,
+                OakRepositoryFixture.getSegmentTarWithDataStore(base.value(options), 256, cacheSize,
                         mmap.value(options), fdsCache.value(options)),
+                OakRepositoryFixture.getSegmentTarWithColdStandby(base.value(options), 256, cacheSize,
+                        mmap.value(options), coldUseDataStore.value(options), fdsCache.value(options), 
+                        coldSyncInterval.value(options), coldShareDataStore.value(options), coldSecure.value(options), 
+                        coldOneShotRun.value(options)),
+                OakRepositoryFixture.getSegmentTarWithAzureSegmentStore(base.value(options),
+                        azureConnectionString.value(options),
+                        azureContainerName.value(options),
+                        azureRootPath.value(options),
+                        256, cacheSize, true, fdsCache.value(options)),
                 OakRepositoryFixture.getRDB(rdbjdbcuri.value(options), rdbjdbcuser.value(options),
                         rdbjdbcpasswd.value(options), rdbjdbctableprefix.value(options), 
-                        dropDBAfterTest.value(options), cacheSize * MB),
+                        dropDBAfterTest.value(options), cacheSize * MB, vgcMaxAge.value(options)),
                 OakRepositoryFixture.getRDBWithDS(rdbjdbcuri.value(options), rdbjdbcuser.value(options),
                         rdbjdbcpasswd.value(options), rdbjdbctableprefix.value(options),
                         dropDBAfterTest.value(options), cacheSize * MB, base.value(options),
-                        fdsCache.value(options)),
-                OakRepositoryFixture.getMultiplexing(base.value(options), 256, cacheSize,
-                        mmap.value(options), mounts.value(options), pathsPerMount.value(options)),
-                OakRepositoryFixture.getMultiplexingInMemory(mounts.value(options), pathsPerMount.value(options))
+                        fdsCache.value(options), vgcMaxAge.value(options)),
+                OakRepositoryFixture.getCompositeStore(base.value(options), 256, cacheSize,
+                        mmap.value(options)),
+                OakRepositoryFixture.getCompositeMemoryStore(),
+                OakRepositoryFixture.getCompositeMongoStore(uri, cacheSize * MB,
+                        dropDBAfterTest.value(options))
         };
 
         Benchmark[] allBenchmarks = new Benchmark[] {
@@ -233,6 +278,7 @@ public class BenchmarkRunner {
                     runAsUser.value(options),
                     runWithToken.value(options),
                     noIterations.value(options)),
+            new LoginWithTokensTest(numberOfUsers.value(options)),
             new LoginSystemTest(),
             new LoginImpersonateTest(),
             new LoginWithMembershipTest(
@@ -251,6 +297,7 @@ public class BenchmarkRunner {
             new ReadPropertyTest(),
             GetNodeTest.withAdmin(),
             GetNodeTest.withAnonymous(),
+            new GetMixinNodeTypesTest(),
             new GetDeepNodeTest(),
             new SetPropertyTest(),
             new SetMultiPropertyTest(),
@@ -275,7 +322,7 @@ public class BenchmarkRunner {
                     flatStructure.value(options),
                     report.value(options)),
             new CreateNodesBenchmark(),
-            new ManyNodes(),
+            new ManyNodes(options.has(verbose)),
             new ObservationTest(),
             new RevisionGCTest(),
             new ContinuousRevisionGCTest(),
@@ -331,6 +378,11 @@ public class BenchmarkRunner {
                     itemsToRead.value(options),
                     report.value(options),
                     randomUser.value(options)),
+            new ReadWithMembershipTest(
+                    itemsToRead.value(options),
+                    report.value(options),
+                    numberOfGroups.value(options),
+                    numberOfInitialAce.value(options)),
             new ConcurrentTraversalTest(
                     runAsAdmin.value(options),
                     itemsToRead.value(options),
@@ -370,6 +422,9 @@ public class BenchmarkRunner {
                     batchSize.value(options),
                     importBehavior.value(options)),
             new AddMemberTest(
+                    numberOfUsers.value(options),
+                    batchSize.value(options)),
+            new AddUniqueMembersTest(
                     numberOfUsers.value(options),
                     batchSize.value(options)),
 
@@ -415,7 +470,7 @@ public class BenchmarkRunner {
                     wikipedia.value(options),
                     flatStructure.value(options),
                     report.value(options), withStorage.value(options), withServer.value(options)),
-            new FindAuthorizableWithScopeTest(numberOfUsers.value(options), setScope.value(options)),
+            new FindAuthorizableWithScopeTest(numberOfUsers.value(options), numberOfGroups.value(options), queryMaxCount.value(options), setScope.value(options), declaredMembership.value(options), runAsAdmin.value(options)),
             new LucenePropertyFullTextTest(
                 wikipedia.value(options),
                 flatStructure.value(options),
@@ -427,15 +482,23 @@ public class BenchmarkRunner {
             new ReplicaCrashResilienceTest(),
 
             // benchmarks for oak-auth-external
-            new ExternalLoginTest(numberOfUsers.value(options), numberOfGroups.value(options), expiration.value(options), dynamicMembership.value(options), autoMembership.values(options)),
+                new ExternalLoginTest(numberOfUsers.value(options), numberOfGroups.value(options),
+                        expiration.value(options), dynamicMembership.value(options), autoMembership.values(options),
+                        report.value(options), statsProvider),
             new SyncAllExternalUsersTest(numberOfUsers.value(options), numberOfGroups.value(options), expiration.value(options), dynamicMembership.value(options), autoMembership.values(options)),
+            new SyncAllUsersTest(numberOfUsers.value(options), numberOfGroups.value(options), expiration.value(options), dynamicMembership.value(options), autoMembership.values(options)),
             new SyncExternalUsersTest(numberOfUsers.value(options), numberOfGroups.value(options), expiration.value(options), dynamicMembership.value(options), autoMembership.values(options), batchSize.value(options)),
             new PrincipalNameResolutionTest(numberOfUsers.value(options), numberOfGroups.value(options), expiration.value(options), roundtripDelay.value(options)),
             new ListIdentitiesTest(numberOfUsers.value(options)),
 
             new HybridIndexTest(base.value(options), statsProvider),
             new BundlingNodeTest(),
-            new PersistentCacheTest(statsProvider)
+            new PersistentCacheTest(statsProvider),
+            new StringWriteTest(),
+            new BasicWriteTest(),
+            new CanReadNonExisting(),
+            new IsNodeTypeTest(runAsAdmin.value(options)),
+            new SetPropertyTransientTest()
         };
 
         Set<String> argset = Sets.newHashSet(nonOption.values(options));

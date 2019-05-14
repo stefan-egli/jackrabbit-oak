@@ -16,35 +16,48 @@
  */
 package org.apache.jackrabbit.oak.http;
 
-import static junit.framework.Assert.assertEquals;
+import static org.junit.Assert.assertEquals;
 
+import org.apache.tika.mime.MediaType;
 import org.junit.Test;
+
+import com.fasterxml.jackson.core.JsonFactory;
 
 public class AcceptHeaderTest {
 
-//    @Test
-//    public void testRfcExample1() {
-//        AcceptHeader accept = new AcceptHeader(
-//                "text/plain; q=0.5, text/html, text/x-dvi; q=0.8, text/x-c");
-//
-//        assertEquals("text/plain", accept.resolve("text/plain"));
-//        assertEquals("text/html", accept.resolve("text/html"));
-//        assertEquals("text/x-dvi", accept.resolve("text/x-dvi"));
-//        assertEquals("text/x-c", accept.resolve("text/x-c"));
-//
-//        assertEquals(
-//                "application/octet-stream",
-//                accept.resolve("application/octet-stream"));
-//        assertEquals(
-//                "application/octet-stream",
-//                accept.resolve("application/pdf"));
-//
-//        assertEquals("text/html", accept.resolve("text/plain", "text/html"));
-//        assertEquals("text/x-c", accept.resolve("text/x-dvi", "text/x-c"));
-//        assertEquals("text/x-dvi", accept.resolve("text/x-dvi", "text/plain"));
-//
-//        assertEquals("text/html", accept.resolve("text/html", "text/x-c"));
-//        assertEquals("text/x-c", accept.resolve("text/x-c", "text/html"));
-//    }
+    private Representation json = new JsonRepresentation(MediaType.parse("application/json"), new JsonFactory());
+    private Representation html = new HtmlRepresentation();
 
+    @Test
+    public void testSpecificTypePlusGenericRange() {
+        // both have the same q value (default of 1.0), but application/json is more specific
+        // see RFC 7231, Section 5.3.2
+        AcceptHeader ah = new AcceptHeader("application/json, */*");
+        Representation selected;
+
+        selected = ah.resolve(json);
+        assertEquals(json, selected);
+
+        selected = ah.resolve(html);
+        assertEquals(html, selected);
+
+        selected = ah.resolve(html);
+        assertEquals(html, selected);
+
+        selected = ah.resolve(json, html);
+        assertEquals(json, selected);
+
+        // OAK-8135
+        selected = ah.resolve(html, json);
+        assertEquals(json, selected);
+ 
+        // retry with q values
+        ah = new AcceptHeader("application/json; q=0.4, */*; q=0.5");
+        selected = ah.resolve(html, json);
+        assertEquals(html, selected);
+
+        ah = new AcceptHeader("application/json, */*; q=0.5");
+        selected = ah.resolve(html, json);
+        assertEquals(json, selected);
+    }
 }

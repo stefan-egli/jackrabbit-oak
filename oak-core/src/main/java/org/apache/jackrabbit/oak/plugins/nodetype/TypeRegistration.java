@@ -18,6 +18,7 @@ package org.apache.jackrabbit.oak.plugins.nodetype;
 
 import static com.google.common.collect.Iterables.addAll;
 import static com.google.common.collect.Iterables.contains;
+import static com.google.common.collect.Iterables.isEmpty;
 import static com.google.common.collect.Lists.newArrayList;
 import static com.google.common.collect.Sets.newHashSet;
 import static com.google.common.collect.Sets.newLinkedHashSet;
@@ -44,25 +45,25 @@ import static org.apache.jackrabbit.oak.api.Type.BOOLEAN;
 import static org.apache.jackrabbit.oak.api.Type.NAME;
 import static org.apache.jackrabbit.oak.api.Type.NAMES;
 import static org.apache.jackrabbit.oak.api.Type.STRING;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.JCR_NODE_TYPES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_DECLARING_NODE_TYPE;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_HAS_PROTECTED_RESIDUAL_CHILD_NODES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_HAS_PROTECTED_RESIDUAL_PROPERTIES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_MANDATORY_CHILD_NODES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_MANDATORY_PROPERTIES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_MIXIN_SUBTYPES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_MIXIN_TYPES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_NAMED_CHILD_NODE_DEFINITIONS;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_NAMED_PROPERTY_DEFINITIONS;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_NAMED_SINGLE_VALUED_PROPERTIES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_PRIMARY_SUBTYPES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_PRIMARY_TYPE;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_PROTECTED_CHILD_NODES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_PROTECTED_PROPERTIES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_RESIDUAL_CHILD_NODE_DEFINITIONS;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_RESIDUAL_PROPERTY_DEFINITIONS;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_SUPERTYPES;
-import static org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants.REP_UUID;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.JCR_NODE_TYPES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_DECLARING_NODE_TYPE;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_HAS_PROTECTED_RESIDUAL_CHILD_NODES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_HAS_PROTECTED_RESIDUAL_PROPERTIES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_MANDATORY_CHILD_NODES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_MANDATORY_PROPERTIES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_MIXIN_SUBTYPES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_MIXIN_TYPES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_NAMED_CHILD_NODE_DEFINITIONS;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_NAMED_PROPERTY_DEFINITIONS;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_NAMED_SINGLE_VALUED_PROPERTIES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_PRIMARY_SUBTYPES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_PRIMARY_TYPE;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_PROTECTED_CHILD_NODES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_PROTECTED_PROPERTIES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_RESIDUAL_CHILD_NODE_DEFINITIONS;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_RESIDUAL_PROPERTY_DEFINITIONS;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_SUPERTYPES;
+import static org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants.REP_UUID;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -71,6 +72,7 @@ import java.util.Set;
 
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.api.PropertyState;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
 import org.apache.jackrabbit.oak.spi.state.DefaultNodeStateDiff;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
@@ -142,6 +144,7 @@ class TypeRegistration extends DefaultNodeStateDiff {
 
         for (String name : types.getChildNodeNames()) {
             mergeSupertypes(types, types.child(name));
+            ensureNtBase(types, types.child(name));
         }
 
         for (String name : types.getChildNodeNames()) {
@@ -220,7 +223,7 @@ class TypeRegistration extends DefaultNodeStateDiff {
                 }
             }
 
-            if (!getBoolean(type, JCR_ISMIXIN)
+            if (!isMixin(type)
                     && !contains(getNames(type, REP_SUPERTYPES), NT_BASE)
                     && !NT_BASE.equals(type.getProperty(JCR_NODETYPENAME).getValue(NAME))) {
                 if (types.hasChildNode(NT_BASE)) {
@@ -236,7 +239,45 @@ class TypeRegistration extends DefaultNodeStateDiff {
         }
     }
 
-    private boolean getBoolean(NodeBuilder builder, String name) {
+    /**
+     * Ensures a primary node type definition that does not extend from any
+     * other primary node type has {@code nt:base} in the {@code jcr:supertypes}
+     * list. Listing {@code nt:base} in this case is not mandatory in a CND, but
+     * is required in {@code jcr:supertypes}.
+     *
+     * @param types the parent node for all node type definitions.
+     * @param type the node type definition to process.
+     */
+    private void ensureNtBase(NodeBuilder types, NodeBuilder type) {
+        if (isMixin(type) || NT_BASE.equals(type.getName(JCR_NODETYPENAME))) {
+            return;
+        }
+        // This is a primary node type.
+        // Make sure jcr:supertypes contains nt:base when needed.
+        Iterable<String> supertypes = getNames(type, JCR_SUPERTYPES);
+        if (isEmpty(supertypes)) {
+            addNameToList(type, JCR_SUPERTYPES, NT_BASE);
+        } else {
+            // is any of the supertypes a primary node type?
+            boolean addNtBase = true;
+            for (String name : supertypes) {
+                NodeBuilder supertype = types.getChildNode(name);
+                if (!isMixin(supertype)) {
+                    addNtBase = false;
+                    break;
+                }
+            }
+            if (addNtBase) {
+                addNameToList(type, JCR_SUPERTYPES, NT_BASE);
+            }
+        }
+    }
+
+    private static boolean isMixin(NodeBuilder type) {
+        return getBoolean(type, JCR_ISMIXIN);
+    }
+
+    private static boolean getBoolean(NodeBuilder builder, String name) {
         PropertyState property = builder.getProperty(name);
         return property != null && property.getValue(BOOLEAN);
     }

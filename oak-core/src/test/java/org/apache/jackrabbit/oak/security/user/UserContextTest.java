@@ -20,8 +20,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.Nonnull;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -33,12 +31,13 @@ import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.commons.PathUtils;
 import org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyStates;
-import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
-import org.apache.jackrabbit.oak.plugins.tree.TreeFactory;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
+import org.apache.jackrabbit.oak.plugins.tree.impl.TreeProviderService;
 import org.apache.jackrabbit.oak.plugins.tree.TreeLocation;
+import org.apache.jackrabbit.oak.plugins.tree.TreeProvider;
 import org.apache.jackrabbit.oak.spi.security.Context;
-import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
+import org.jetbrains.annotations.NotNull;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -51,7 +50,7 @@ public class UserContextTest implements UserConstants {
 
     private final Context ctx = UserContext.getInstance();
 
-    private static Tree mockTree(@Nonnull String name, @Nonnull String ntName) {
+    private static Tree mockTree(@NotNull String name, @NotNull String ntName) {
         Tree t = Mockito.mock(Tree.class);
         when(t.getName()).thenReturn(name);
         when(t.getProperty(JcrConstants.JCR_PRIMARYTYPE)).thenReturn(PropertyStates.createProperty(JcrConstants.JCR_PRIMARYTYPE, ntName, Type.NAME));
@@ -185,7 +184,8 @@ public class UserContextTest implements UserConstants {
 
     @Test
     public void testEmptyNotDefinesTree() {
-        assertFalse(ctx.definesTree(TreeFactory.createReadOnlyTree(EmptyNodeState.EMPTY_NODE)));
+        TreeProvider treeProvider = new TreeProviderService();
+        assertFalse(ctx.definesTree(treeProvider.createReadOnlyTree(EmptyNodeState.EMPTY_NODE)));
     }
 
     @Test

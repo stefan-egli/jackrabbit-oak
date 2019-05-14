@@ -17,8 +17,6 @@
 package org.apache.jackrabbit.oak.security.user;
 
 import java.security.Principal;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
 import javax.jcr.Credentials;
 import javax.jcr.RepositoryException;
 
@@ -32,7 +30,9 @@ import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.security.user.UserIdCredentials;
 import org.apache.jackrabbit.oak.spi.security.user.util.PasswordUtil;
 import org.apache.jackrabbit.oak.spi.security.user.util.UserUtil;
-import org.apache.jackrabbit.oak.util.TreeUtil;
+import org.apache.jackrabbit.oak.plugins.tree.TreeUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import static org.apache.jackrabbit.oak.api.Type.STRING;
 
@@ -53,7 +53,7 @@ class UserImpl extends AuthorizableImpl implements User {
 
     //---------------------------------------------------< AuthorizableImpl >---
     @Override
-    void checkValidTree(@Nonnull Tree tree) throws RepositoryException {
+    void checkValidTree(@NotNull Tree tree) throws RepositoryException {
         if (!UserUtil.isType(tree, AuthorizableType.USER)) {
             throw new IllegalArgumentException("Invalid user node: node type rep:User expected.");
         }
@@ -99,7 +99,7 @@ class UserImpl extends AuthorizableImpl implements User {
     }
 
     @Override
-    public Impersonation getImpersonation() throws RepositoryException {
+    public Impersonation getImpersonation() {
         return new ImpersonationImpl(this);
     }
 
@@ -131,6 +131,9 @@ class UserImpl extends AuthorizableImpl implements User {
         if (isAdmin) {
             throw new RepositoryException("The administrator user cannot be disabled.");
         }
+
+        getUserManager().onDisable(this, reason);
+
         Tree tree = getTree();
         if (reason == null) {
             if (tree.hasProperty(REP_DISABLED)) {
@@ -143,12 +146,12 @@ class UserImpl extends AuthorizableImpl implements User {
     }
 
     @Override
-    public boolean isDisabled() throws RepositoryException {
+    public boolean isDisabled() {
         return getTree().hasProperty(REP_DISABLED);
     }
 
     @Override
-    public String getDisabledReason() throws RepositoryException {
+    public String getDisabledReason() {
         PropertyState disabled = getTree().getProperty(REP_DISABLED);
         if (disabled != null) {
             return disabled.getValue(STRING);
@@ -158,7 +161,7 @@ class UserImpl extends AuthorizableImpl implements User {
     }
 
     //------------------------------------------------------------< private >---
-    @CheckForNull
+    @Nullable
     private String getPasswordHash() {
         return TreeUtil.getString(getTree(), UserConstants.REP_PASSWORD);
     }

@@ -23,15 +23,16 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.jackrabbit.oak.plugins.document.DocumentCheckpointRetriever;
 import org.apache.jackrabbit.oak.plugins.document.DocumentNodeStore;
+import org.apache.jackrabbit.oak.segment.CheckpointAccessor;
+import org.apache.jackrabbit.oak.segment.SegmentNodeStore;
 import org.apache.jackrabbit.oak.spi.state.ChildNodeEntry;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
-import org.apache.jackrabbit.oak.upgrade.cli.node.TarNodeStore;
+import org.apache.jackrabbit.oak.upgrade.cli.node.FileStoreUtils;
+import org.jetbrains.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
-
 public final class CheckpointRetriever {
 
     public static class Checkpoint implements Comparable<Checkpoint> {
@@ -71,10 +72,14 @@ public final class CheckpointRetriever {
 
     public static List<Checkpoint> getCheckpoints(NodeStore nodeStore) {
         List<Checkpoint> result;
-        if (nodeStore instanceof TarNodeStore) {
-            result = getCheckpoints((TarNodeStore) nodeStore);
+        if (nodeStore instanceof SegmentNodeStore) {
+            result = getCheckpoints(CheckpointAccessor.getCheckpointsRoot((SegmentNodeStore) nodeStore));
+        } else if (nodeStore instanceof org.apache.jackrabbit.oak.plugins.segment.SegmentNodeStore) {
+            result = getCheckpoints(org.apache.jackrabbit.oak.plugins.segment.CheckpointAccessor.getCheckpointsRoot((org.apache.jackrabbit.oak.plugins.segment.SegmentNodeStore) nodeStore));
         } else if (nodeStore instanceof DocumentNodeStore) {
             result = DocumentCheckpointRetriever.getCheckpoints((DocumentNodeStore) nodeStore);
+        } else if (nodeStore instanceof FileStoreUtils.NodeStoreWithFileStore) {
+            result = getCheckpoints(CheckpointAccessor.getCheckpointsRoot(((FileStoreUtils.NodeStoreWithFileStore) nodeStore).getNodeStore()));
         } else {
             return null;
         }
@@ -82,8 +87,8 @@ public final class CheckpointRetriever {
         return result;
     }
 
-    private static List<Checkpoint> getCheckpoints(TarNodeStore nodeStore) {
-        return Lists.newArrayList(Iterables.transform(nodeStore.getSuperRoot().getChildNode("checkpoints").getChildNodeEntries(), new Function<ChildNodeEntry, Checkpoint>() {
+    private static List<Checkpoint> getCheckpoints(NodeState checkpointRoot) {
+        return Lists.newArrayList(Iterables.transform(checkpointRoot.getChildNodeEntries(), new Function<ChildNodeEntry, Checkpoint>() {
             @Nullable
             @Override
             public Checkpoint apply(@Nullable ChildNodeEntry input) {

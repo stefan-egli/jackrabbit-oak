@@ -26,7 +26,7 @@ import java.util.List;
 import com.google.common.base.Strings;
 import org.apache.commons.io.FileUtils;
 import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexDefinition;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexDefinition;
 import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexEditorContext;
 import org.apache.jackrabbit.oak.plugins.index.lucene.hybrid.NRTIndex;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
@@ -37,7 +37,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import static org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState.EMPTY_NODE;
-import static org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent.INITIAL_CONTENT;
+import static org.apache.jackrabbit.oak.InitialContentHelper.INITIAL_CONTENT;
 import static org.junit.Assert.*;
 
 public class IndexRootDirectoryTest {
@@ -106,7 +106,7 @@ public class IndexRootDirectoryTest {
         File fb2 = dir.getIndexDir(getDefn(), "/b", "default");
 
         List<LocalIndexDir> dirs = dir.getAllLocalIndexes();
-        assertEquals(2, dirs.size());
+        assertEquals(4, dirs.size());
 
         assertEquals(fb2.getParentFile().getAbsolutePath(), getDir("/b", dirs).getFSPath());
         assertEquals(fa2.getParentFile().getAbsolutePath(), getDir("/a", dirs).getFSPath());
@@ -220,8 +220,8 @@ public class IndexRootDirectoryTest {
         LuceneIndexEditorContext.configureUniqueId(resetBuilder());
     }
 
-    private IndexDefinition getDefn(){
-        return new IndexDefinition(root, builder.getNodeState(), "/foo");
+    private LuceneIndexDefinition getDefn(){
+        return new LuceneIndexDefinition(root, builder.getNodeState(), "/foo");
     }
 
     private static LocalIndexDir getDir(String jcrPath, List<LocalIndexDir> dirs){

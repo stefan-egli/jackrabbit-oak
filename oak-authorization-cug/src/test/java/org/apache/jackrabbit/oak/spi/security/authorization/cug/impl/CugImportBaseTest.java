@@ -19,8 +19,6 @@ package org.apache.jackrabbit.oak.spi.security.authorization.cug.impl;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Set;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.jcr.ImportUUIDBehavior;
 import javax.jcr.Node;
 import javax.jcr.Repository;
@@ -39,7 +37,7 @@ import org.apache.jackrabbit.api.JackrabbitSession;
 import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.oak.api.CommitFailedException;
 import org.apache.jackrabbit.oak.jcr.Jcr;
-import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
 import org.apache.jackrabbit.oak.query.QueryEngineSettings;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
@@ -48,6 +46,8 @@ import org.apache.jackrabbit.oak.spi.security.principal.EveryonePrincipal;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalImpl;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.xml.ProtectedItemImporter;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -107,7 +107,7 @@ public abstract class CugImportBaseTest {
     @Before
     public void before() throws Exception {
         ConfigurationParameters config = getConfigurationParameters();
-        SecurityProvider securityProvider = new CugSecurityProvider(config);
+        SecurityProvider securityProvider = CugSecurityProvider.newTestSecurityProvider(config);
         QueryEngineSettings queryEngineSettings = new QueryEngineSettings();
         queryEngineSettings.setFailTraversal(true);
 
@@ -140,7 +140,7 @@ public abstract class CugImportBaseTest {
         }
     }
 
-    @Nonnull
+    @NotNull
     private ConfigurationParameters getConfigurationParameters() {
         String importBehavior = getImportBehavior();
         if (importBehavior != null) {
@@ -189,7 +189,7 @@ public abstract class CugImportBaseTest {
         }
     }
 
-    static void assertPrincipalNames(@Nonnull Set<String> expectedPrincipalNames, @Nonnull Value[] principalNames) {
+    static void assertPrincipalNames(@NotNull Set<String> expectedPrincipalNames, @NotNull Value[] principalNames) {
         assertEquals(expectedPrincipalNames.size(), principalNames.length);
         Set<String> result = ImmutableSet.copyOf(Iterables.transform(ImmutableSet.copyOf(principalNames), new Function<Value, String>() {
             @Nullable

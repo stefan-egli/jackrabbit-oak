@@ -38,7 +38,6 @@ import org.apache.jackrabbit.oak.spi.state.NodeBuilder
 import org.apache.jackrabbit.oak.spi.state.NodeStore
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.After
-import org.junit.Ignore
 import org.junit.Test
 import org.osgi.framework.ServiceEvent
 import org.osgi.framework.ServiceReference
@@ -386,7 +385,7 @@ class DocumentNodeStoreConfigTest extends AbstractRepositoryFactoryTest {
     public void tearDown() {
         super.tearDown()
         if (mongoConn) {
-            MongoUtils.dropCollections(mongoConn.DB)
+            MongoUtils.dropCollections(mongoConn.database)
         }
     }
 
@@ -397,7 +396,7 @@ class DocumentNodeStoreConfigTest extends AbstractRepositoryFactoryTest {
     }
 
     private Collection<String> getCollectionNames() {
-        return mongoConn.DB.getCollectionNames().collect { it.toUpperCase() }
+        return mongoConn.database.listCollectionNames().collect { it.toUpperCase() }
     }
 
     private List<String> getExistingTables(DataSource ds) {

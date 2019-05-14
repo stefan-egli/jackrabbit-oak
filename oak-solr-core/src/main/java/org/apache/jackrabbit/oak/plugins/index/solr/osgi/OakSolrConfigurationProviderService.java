@@ -19,9 +19,6 @@ package org.apache.jackrabbit.oak.plugins.index.solr.osgi;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
 import org.apache.felix.scr.annotations.Deactivate;
@@ -35,6 +32,8 @@ import org.apache.jackrabbit.oak.plugins.index.solr.configuration.OakSolrConfigu
 import org.apache.jackrabbit.oak.plugins.index.solr.configuration.OakSolrConfigurationDefaults;
 import org.apache.jackrabbit.oak.plugins.index.solr.configuration.OakSolrConfigurationProvider;
 import org.apache.jackrabbit.oak.spi.query.Filter;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.osgi.service.component.ComponentContext;
 
 /**
@@ -111,6 +110,9 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
     @Property(boolValue = OakSolrConfigurationDefaults.COLLAPSE_JCR_CONTENT_NODES, label = "collapse jcr:content nodes")
     private static final String COLLAPSE_JCR_CONTENT_NODES = "collapse.jcrcontent.nodes";
 
+    @Property(boolValue = OakSolrConfigurationDefaults.COLLAPSE_JCR_CONTENT_PARENTS, label = "collapse jcr:content parents")
+    private static final String COLLAPSE_JCR_CONTENT_PARENTS = "collapse.jcrcontent.parents";
+
     private String pathChildrenFieldName;
     private String pathParentFieldName;
     private String pathDescendantsFieldName;
@@ -127,6 +129,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
     private String[] typeMappings;
     private String[] propertyMappings;
     private boolean collapseJcrContentNodes;
+    private boolean collapseJcrContentParents;
     private String depthField;
 
     private OakSolrConfiguration oakSolrConfiguration;
@@ -150,6 +153,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
         usedProperties = PropertiesUtil.toStringArray(componentContext.getProperties().get(USED_PROPERTIES));
         propertyMappings = PropertiesUtil.toStringArray(componentContext.getProperties().get(PROPERTY_MAPPINGS));
         collapseJcrContentNodes = Boolean.valueOf(String.valueOf(componentContext.getProperties().get(COLLAPSE_JCR_CONTENT_NODES)));
+        collapseJcrContentParents = Boolean.valueOf(String.valueOf(componentContext.getProperties().get(COLLAPSE_JCR_CONTENT_PARENTS)));
     }
 
     @Deactivate
@@ -157,7 +161,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
         oakSolrConfiguration = null;
     }
 
-    @Nonnull
+    @NotNull
     @Override
     public OakSolrConfiguration getConfiguration() {
         if (oakSolrConfiguration == null) {
@@ -190,13 +194,13 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
                     return null;
                 }
 
-                @Nonnull
+                @NotNull
                 @Override
                 public String getPathField() {
                     return pathExactFieldName;
                 }
 
-                @CheckForNull
+                @Nullable
                 @Override
                 public String getFieldForPathRestriction(Filter.PathRestriction pathRestriction) {
                     String fieldName = null;
@@ -226,7 +230,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
                     return fieldName;
                 }
 
-                @Nonnull
+                @NotNull
                 @Override
                 public CommitPolicy getCommitPolicy() {
                     return commitPolicy;
@@ -257,7 +261,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
                     return useForPathRestrictions;
                 }
 
-                @Nonnull
+                @NotNull
                 @Override
                 public Collection<String> getIgnoredProperties() {
                     if (ignoredProperties != null && ignoredProperties.length > 0 && ignoredProperties[0].length() > 0) {
@@ -267,7 +271,7 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
                     }
                 }
 
-                @Nonnull
+                @NotNull
                 @Override
                 public Collection<String> getUsedProperties() {
                     if (usedProperties != null && usedProperties.length > 0 && usedProperties[0].length() > 0) {
@@ -282,7 +286,12 @@ public class OakSolrConfigurationProviderService implements OakSolrConfiguration
                     return collapseJcrContentNodes;
                 }
 
-                @Nonnull
+                @Override
+                public boolean collapseJcrContentParents() {
+                    return collapseJcrContentParents;
+                }
+
+                @NotNull
                 @Override
                 public String getCollapsedPathField() {
                     return collapsedPathField;

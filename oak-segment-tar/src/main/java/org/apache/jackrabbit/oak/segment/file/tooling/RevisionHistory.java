@@ -28,21 +28,19 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Iterator;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
+import com.google.common.base.Function;
+import com.google.common.collect.Iterators;
 import org.apache.jackrabbit.oak.json.BlobSerializer;
 import org.apache.jackrabbit.oak.json.JsonSerializer;
 import org.apache.jackrabbit.oak.segment.SegmentNodeState;
+import org.apache.jackrabbit.oak.segment.spi.persistence.JournalFile;
 import org.apache.jackrabbit.oak.segment.file.InvalidFileStoreVersionException;
 import org.apache.jackrabbit.oak.segment.file.JournalEntry;
 import org.apache.jackrabbit.oak.segment.file.JournalReader;
 import org.apache.jackrabbit.oak.segment.file.ReadOnlyFileStore;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
-
-import com.google.common.base.Function;
-import com.google.common.collect.Iterators;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Utility for tracing a node back through the revision history.
@@ -56,7 +54,7 @@ public class RevisionHistory {
      * @param directory
      * @throws IOException
      */
-    public RevisionHistory(@Nonnull File directory) throws IOException, InvalidFileStoreVersionException {
+    public RevisionHistory(@NotNull File directory) throws IOException, InvalidFileStoreVersionException {
         this.store = fileStoreBuilder(checkNotNull(directory)).buildReadOnly();
     }
 
@@ -77,14 +75,14 @@ public class RevisionHistory {
      * @return
      * @throws IOException
      */
-    public Iterator<HistoryElement> getHistory(@Nonnull File journal, @Nonnull final String path)
+    public Iterator<HistoryElement> getHistory(@NotNull JournalFile journal, @NotNull final String path)
             throws IOException {
         checkNotNull(path);
         
         try (JournalReader journalReader = new JournalReader(checkNotNull(journal))) {
             return Iterators.transform(journalReader,
                     new Function<JournalEntry, HistoryElement>() {
-                        @Nullable @Override
+                        @NotNull @Override
                         public HistoryElement apply(JournalEntry entry) {
                             store.setRevision(entry.getRevision());
                             NodeState node = getNode(store.getHead(), path);
@@ -110,7 +108,7 @@ public class RevisionHistory {
          * Revision of the node
          * @return
          */
-        @Nonnull
+        @NotNull
         public String getRevision() {
             return revision;
         }
@@ -119,7 +117,7 @@ public class RevisionHistory {
          * Node at given revision
          * @return
          */
-        @CheckForNull
+        @Nullable
         public NodeState getNode() {
             return node;
         }

@@ -19,29 +19,28 @@ package org.apache.jackrabbit.oak.plugins.index.property;
 import static com.google.common.base.Predicates.in;
 import static com.google.common.collect.Iterables.any;
 import static com.google.common.collect.Sets.newHashSet;
-import static com.google.common.collect.Sets.newLinkedHashSet;
 import static java.util.Collections.emptySet;
 import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.DECLARING_NODE_TYPES;
 import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.INDEX_CONTENT_NODE_NAME;
 import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.PROPERTY_NAMES;
-import static org.apache.jackrabbit.oak.plugins.index.property.PropertyIndex.encode;
 
 import java.util.List;
 import java.util.Set;
 
-import org.apache.jackrabbit.oak.api.PropertyValue;
 import org.apache.jackrabbit.oak.commons.PathUtils;
+import org.apache.jackrabbit.oak.plugins.index.Cursors;
 import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
-import org.apache.jackrabbit.oak.plugins.index.PathFilter;
 import org.apache.jackrabbit.oak.plugins.index.property.strategy.IndexStoreStrategy;
-import org.apache.jackrabbit.oak.query.QueryEngineSettings;
+import org.apache.jackrabbit.oak.spi.filter.PathFilter;
 import org.apache.jackrabbit.oak.spi.mount.MountInfoProvider;
 import org.apache.jackrabbit.oak.spi.mount.Mounts;
 import org.apache.jackrabbit.oak.spi.query.Cursor;
-import org.apache.jackrabbit.oak.spi.query.Cursors;
 import org.apache.jackrabbit.oak.spi.query.Filter;
 import org.apache.jackrabbit.oak.spi.query.Filter.PropertyRestriction;
+import org.apache.jackrabbit.oak.spi.query.QueryLimits;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
@@ -50,6 +49,8 @@ import com.google.common.collect.Lists;
  * Plan for querying a given property index using a given filter.
  */
 public class PropertyIndexPlan {
+    
+    static final Logger LOG = LoggerFactory.getLogger(PropertyIndexPlan.class);
 
     /**
      * The cost overhead to use the index in number of read operations.
@@ -84,7 +85,9 @@ public class PropertyIndexPlan {
     private final PathFilter pathFilter;
 
     private final boolean unique;
-
+    
+    private final boolean deprecated;
+    
     PropertyIndexPlan(String name, NodeState root, NodeState definition,
                       Filter filter){
         this(name, root, definition, filter, Mounts.defaultMountInfoProvider());
@@ -103,8 +106,11 @@ public class PropertyIndexPlan {
         Iterable<String> types = definition.getNames(DECLARING_NODE_TYPES);
         // if there is no such property, then all nodetypes are matched
         this.matchesAllTypes = !definition.hasProperty(DECLARING_NODE_TYPES);
+        this.deprecated = definition.getBoolean(IndexConstants.INDEX_DEPRECATED);
         this.matchesNodeTypes =
                 matchesAllTypes || any(types, in(filter.getSupertypes()));
+
+        ValuePattern valuePattern = new ValuePattern(definition);
 
         double bestCost = Double.POSITIVE_INFINITY;
         Set<String> bestValues = emptySet();
@@ -142,7 +148,25 @@ public class PropertyIndexPlan {
                         // of the child node (well, we could, for some node types)
                         continue;
                     }
-                    Set<String> values = getValues(restriction);
+                    Set<String> values = ValuePatternUtil.getValues(restriction, new ValuePattern());
+                    if (valuePattern.matchesAll()) {
+                        // matches all values: not a problem
+                    } else if (values == null) {
+                        // "is not null" condition, but we have a value pattern
+                        // that doesn't match everything
+                        String prefix = ValuePatternUtil.getLongestPrefix(filter, property);
+                        if (!valuePattern.matchesPrefix(prefix)) {
+                            // region match which is not fully in the pattern
+                            continue;
+                        }
+                    } else {
+                        // we have a value pattern, for example (a|b),
+                        // but we search (also) for 'c': can't match
+                        if (!valuePattern.matchesAll(values)) {
+                            continue;
+                        }
+                    }
+                    values = PropertyIndexUtil.encode(values);
                     double cost = strategies.isEmpty() ? MAX_COST : 0;
                     for (IndexStoreStrategy strategy : strategies) {
                         cost += strategy.count(filter, root, definition,
@@ -172,26 +196,6 @@ public class PropertyIndexPlan {
         this.cost = COST_OVERHEAD + bestCost;
     }
 
-    private static Set<String> getValues(PropertyRestriction restriction) {
-        if (restriction.firstIncluding
-                && restriction.lastIncluding
-                && restriction.first != null
-                && restriction.first.equals(restriction.last)) {
-            // "[property] = $value"
-            return encode(restriction.first);
-        } else if (restriction.list != null) {
-            // "[property] IN (...)
-            Set<String> values = newLinkedHashSet(); // keep order for testing
-            for (PropertyValue value : restriction.list) {
-                values.addAll(encode(value));
-            }
-            return values;
-        } else {
-            // "[property] is not null" or "[property] is null"
-            return null;
-        }
-    }
-
     String getName() {
         return name;
     }
@@ -201,7 +205,11 @@ public class PropertyIndexPlan {
     }
 
     Cursor execute() {
-        QueryEngineSettings settings = filter.getQueryEngineSettings();
+        if (deprecated) {
+            LOG.warn("This index is deprecated: {}; it is used for query {}. " + 
+                    "Please change the query or the index definitions.", name, filter);
+        }
+        QueryLimits settings = filter.getQueryLimits();
         List<Iterable<String>> iterables = Lists.newArrayList();
         for (IndexStoreStrategy s : strategies) {
             iterables.add(s.query(filter, name, definition, values));

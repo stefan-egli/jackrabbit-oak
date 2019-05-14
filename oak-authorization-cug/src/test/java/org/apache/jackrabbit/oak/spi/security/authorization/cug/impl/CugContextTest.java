@@ -17,7 +17,6 @@
 package org.apache.jackrabbit.oak.spi.security.authorization.cug.impl;
 
 import java.util.List;
-import javax.jcr.AccessDeniedException;
 import javax.jcr.security.AccessControlList;
 import javax.jcr.security.AccessControlManager;
 
@@ -29,7 +28,7 @@ import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.plugins.memory.PropertyStates;
-import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
 import org.apache.jackrabbit.oak.plugins.tree.TreeLocation;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConstants;
 import org.apache.jackrabbit.oak.util.NodeUtil;
@@ -113,7 +112,7 @@ public class CugContextTest extends AbstractCugTest implements NodeTypeConstants
     }
 
     @Test
-    public void testDefinesLocation() throws AccessDeniedException {
+    public void testDefinesLocation() {
         assertTrue(CugContext.INSTANCE.definesLocation(TreeLocation.create(root, CUG_PATH)));
         assertTrue(CugContext.INSTANCE.definesLocation(TreeLocation.create(root, CUG_PATH + "/" + CugConstants.REP_PRINCIPAL_NAMES)));
 

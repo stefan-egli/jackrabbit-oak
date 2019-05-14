@@ -37,15 +37,15 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.Striped;
+import org.apache.jackrabbit.oak.commons.PerfLogger;
 import org.apache.jackrabbit.oak.commons.concurrent.NotifyingFutureTask;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexNode;
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexTracker;
+import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexNode;
 import org.apache.jackrabbit.oak.plugins.index.lucene.writer.LuceneIndexWriter;
 import org.apache.jackrabbit.oak.stats.CounterStats;
 import org.apache.jackrabbit.oak.stats.MeterStats;
 import org.apache.jackrabbit.oak.stats.StatisticsProvider;
 import org.apache.jackrabbit.oak.stats.StatsOptions;
-import org.apache.jackrabbit.oak.util.PerfLogger;
 import org.apache.lucene.index.IndexableField;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +64,7 @@ public class DocumentQueue implements Closeable, IndexingQueue {
     private final MeterStats added;
     private final MeterStats dropped;
     private final Striped<Lock> locks = Striped.lock(64);
+    private UncaughtExceptionHandler delegate = (t, e) -> {};
 
     /**
      * Time in millis for which add call to queue
@@ -124,6 +125,7 @@ public class DocumentQueue implements Closeable, IndexingQueue {
                     PERF_LOGGER.end(start, 1, "Processed {} docs from queue", count);
                 } catch (Throwable t) {
                     exceptionHandler.uncaughtException(Thread.currentThread(), t);
+                    delegate.uncaughtException(Thread.currentThread(), t);
                 }
                 return null;
             }
@@ -198,6 +200,14 @@ public class DocumentQueue implements Closeable, IndexingQueue {
         addDocsToIndex(docsPerIndex, false);
     }
 
+    /**
+     * Delegate handled which can be used by test to check for
+     * any exception occurring in queue processing
+     */
+    public void setExceptionHandler(UncaughtExceptionHandler delegate) {
+        this.delegate = delegate;
+    }
+
     private void addDocsToIndex(Map<String, Collection<LuceneDoc>> docsPerIndex, boolean docsFromQueue) {
         //If required it can optimized by indexing diff indexes in parallel
         //Something to consider if it becomes a bottleneck
@@ -232,9 +242,9 @@ public class DocumentQueue implements Closeable, IndexingQueue {
             return;
         }
 
-        IndexNode indexNode = tracker.acquireIndexNode(indexPath);
+        LuceneIndexNode indexNode = tracker.acquireIndexNode(indexPath);
         if (indexNode == null) {
-            log.debug("No IndexNode found for index [{}].", indexPath);
+            log.debug("No LuceneIndexNode found for index [{}].", indexPath);
             return;
         }
 
@@ -243,7 +253,7 @@ public class DocumentQueue implements Closeable, IndexingQueue {
             boolean docAdded = false;
             for (LuceneDoc doc : docs) {
                 if (writer == null) {
-                    //IndexDefinition per IndexNode might have changed and local
+                    //IndexDefinition per LuceneIndexNode might have changed and local
                     //indexing is disabled. Ignore
                     log.debug("No local IndexWriter found for index [{}]. Skipping index " +
                             "entry for [{}]", indexPath, doc.docPath);
@@ -271,6 +281,7 @@ public class DocumentQueue implements Closeable, IndexingQueue {
             //For now we just log it. Later we need to see if frequent error then to
             //temporarily disable indexing for this index
             log.warn("Error occurred while indexing index [{}]",indexPath, e);
+            delegate.uncaughtException(Thread.currentThread(), e);
         } finally {
             indexNode.release();
         }

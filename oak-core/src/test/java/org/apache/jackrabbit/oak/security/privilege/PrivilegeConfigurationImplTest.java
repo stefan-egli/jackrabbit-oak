@@ -23,10 +23,13 @@ import com.google.common.collect.ImmutableSet;
 import org.apache.jackrabbit.api.security.authorization.PrivilegeManager;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.namepath.NamePathMapper;
+import org.apache.jackrabbit.oak.plugins.tree.impl.RootProviderService;
+import org.apache.jackrabbit.oak.plugins.tree.impl.TreeProviderService;
 import org.apache.jackrabbit.oak.spi.commit.CommitHook;
 import org.apache.jackrabbit.oak.spi.commit.MoveTracker;
 import org.apache.jackrabbit.oak.spi.commit.ValidatorProvider;
 import org.apache.jackrabbit.oak.spi.security.privilege.PrivilegeConfiguration;
+import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
@@ -37,6 +40,12 @@ import static org.junit.Assert.assertTrue;
 public class PrivilegeConfigurationImplTest {
 
     private final PrivilegeConfigurationImpl configuration = new PrivilegeConfigurationImpl();
+
+    @Before
+    public void before() {
+        configuration.setRootProvider(new RootProviderService());
+        configuration.setTreeProvider(new TreeProviderService());
+    }
 
     @Test
     public void testGetName() {

@@ -20,10 +20,11 @@ import java.security.Principal;
 import java.util.Enumeration;
 import java.util.UUID;
 
-import javax.jcr.RepositoryException;
 import javax.security.auth.Subject;
 
 import com.google.common.collect.ImmutableSet;
+
+import org.apache.jackrabbit.api.security.principal.GroupPrincipal;
 import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.api.security.user.User;
 import org.apache.jackrabbit.oak.AbstractSecurityTest;
@@ -40,17 +41,7 @@ import static org.junit.Assert.assertTrue;
 
 public class ImpersonationImplEmptyTest extends AbstractSecurityTest {
 
-    final java.security.acl.Group groupPrincipal = new java.security.acl.Group() {
-        @Override
-        public boolean addMember(Principal user) {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean removeMember(Principal user) {
-            throw new UnsupportedOperationException();
-        }
-
+    final GroupPrincipal groupPrincipal = new GroupPrincipal() {
         @Override
         public boolean isMember(Principal member) {
             throw new UnsupportedOperationException();

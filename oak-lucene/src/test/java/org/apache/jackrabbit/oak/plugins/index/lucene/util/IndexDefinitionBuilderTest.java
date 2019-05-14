@@ -27,19 +27,29 @@ import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.core.ImmutableRoot;
 import org.apache.jackrabbit.oak.plugins.index.IndexConstants;
-import org.apache.jackrabbit.oak.plugins.index.PathFilter;
-import org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants;
-import org.apache.jackrabbit.oak.plugins.tree.TreeFactory;
+import org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants;
+import org.apache.jackrabbit.oak.plugins.tree.factories.TreeFactory;
+import org.apache.jackrabbit.oak.spi.filter.PathFilter;
 import org.apache.jackrabbit.oak.spi.state.NodeBuilder;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
 import org.apache.jackrabbit.oak.spi.state.NodeStateUtils;
 import org.junit.After;
 import org.junit.Test;
 
+import static com.google.common.collect.ImmutableList.of;
 import static java.util.Arrays.asList;
+import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.INDEX_DEPRECATED;
 import static org.apache.jackrabbit.oak.plugins.index.IndexConstants.REINDEX_PROPERTY_NAME;
-import static org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.AGGREGATES;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.AGGREGATES;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.FIELD_BOOST;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.PROP_FACETS;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.PROP_REFRESH_DEFN;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.COST_PER_ENTRY;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.COST_PER_EXECUTION;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.BLOB_SIZE;
+import static org.apache.jackrabbit.oak.plugins.index.search.FulltextIndexConstants.PROP_WEIGHT;
 import static org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState.EMPTY_NODE;
+import static org.apache.jackrabbit.oak.plugins.memory.MultiStringPropertyState.stringProperty;
 import static org.junit.Assert.*;
 
 public class IndexDefinitionBuilderTest {
@@ -62,6 +72,8 @@ public class IndexDefinitionBuilderTest {
     @Test
     public void indexRule() throws Exception{
         builder.includedPaths("/a", "/b");
+        builder.queryPaths("/c", "/d");
+        builder.supersedes("/e", "/f");
         builder.indexRule("nt:base")
                     .property("foo")
                         .ordered()
@@ -77,6 +89,8 @@ public class IndexDefinitionBuilderTest {
         assertTrue(state.getChildNode("indexRules").exists());
         assertTrue(state.getChildNode("indexRules").getChildNode("nt:base").exists());
         assertEquals(asList("/a", "/b"), state.getProperty(PathFilter.PROP_INCLUDED_PATHS).getValue(Type.STRINGS));
+        assertEquals(asList("/c", "/d"), state.getProperty(IndexConstants.QUERY_PATHS).getValue(Type.STRINGS));
+        assertEquals(asList("/e", "/f"), state.getProperty(IndexConstants.SUPERSEDED_INDEX_PATHS).getValue(Type.STRINGS));
     }
 
     @Test
@@ -144,11 +158,11 @@ public class IndexDefinitionBuilderTest {
     @Test
     public void regexProperty() throws Exception{
         builder.indexRule("nt:base")
-                .property(LuceneIndexConstants.REGEX_ALL_PROPS, true);
+                .property(FulltextIndexConstants.REGEX_ALL_PROPS, true);
 
         NodeState state = builder.build();
         assertTrue(NodeStateUtils.getNode(state, "indexRules/nt:base/properties/prop")
-                .getBoolean(LuceneIndexConstants.PROP_IS_REGEX));
+                .getBoolean(FulltextIndexConstants.PROP_IS_REGEX));
     }
 
     @Test
@@ -209,6 +223,7 @@ public class IndexDefinitionBuilderTest {
         assertFalse(builder.isReindexRequired());
         NodeState state = builder.build();
         assertFalse(state.getBoolean(REINDEX_PROPERTY_NAME));
+        assertFalse(state.getBoolean(PROP_REFRESH_DEFN));
 
 
         NodeState baseState = builder.build();
@@ -247,6 +262,507 @@ public class IndexDefinitionBuilderTest {
     }
 
     @Test
+    public void noReindexWhenIfQueryPathsAddedOrChanged() {
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.queryPaths("/a","/b");
+
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.queryPaths("/a","/c");
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().removeProperty(IndexConstants.QUERY_PATHS);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenIfIndexTagsAddedOrChanged() {
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().setProperty(stringProperty(IndexConstants.INDEX_TAGS, of("foo1", "foo2")));
+
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().setProperty(stringProperty(IndexConstants.INDEX_TAGS, of("foo2", "foo3")));
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().removeProperty(IndexConstants.INDEX_TAGS);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenIfBlobSizeAddedOrChanged() {
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().setProperty(BLOB_SIZE,32768);
+
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().setProperty(BLOB_SIZE,35768);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().removeProperty(BLOB_SIZE);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    // This property is used in cost estimation - no reindexing required
+    // on property change
+    @Test
+    public void noReindexIfWeightPropertyAddedOrChanged() throws Exception {
+
+        builder.indexRule("nt:base").property("fooProp");
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        // Add the property weight to fooProp - this shouldn't cause reindex flag to set
+        builder.indexRule("nt:base").property("fooProp").weight(10);
+
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        // Now change the value for weight on fooProp - this also shouldn't lead to setting of reindex flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.indexRule("nt:base").property("fooProp").weight(20);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.indexRule("nt:base").property("fooProp").getBuilderTree().removeProperty(PROP_WEIGHT);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+    }
+    // modifying boost value shouldn't require reindexing because we use
+    // QueryTime Boosts and not index time boosts. Refer OAK-3367 for details
+    @Test
+    public void noReindexIfBoostPropAddedOrChanged() throws  Exception {
+        builder.indexRule("nt:base").property("fooProp");
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        // Add the property  boost - this shouldn't cause reindex flag to set
+        builder.indexRule("nt:base").property("fooProp").boost(1.0f);
+
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        // Now change the value for boost - this also shouldn't lead to setting of reindex flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.indexRule("nt:base").property("fooProp").boost(2.0f);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.indexRule("nt:base").property("fooProp").getBuilderTree().removeProperty(FIELD_BOOST);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+    }
+
+    // This is a node for configuration on how faceted search works
+    // Everything impacts querty time evauation - so no need of reindexing in case of changes
+    @Test
+    public void noReindexWhenFacetNodeAddedOrRemoved() throws Exception {
+        builder.indexRule("nt:base")
+                .property("foo1").facets();
+
+        NodeState currentNodeState  = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        //Add the facets child node now
+        builder.getBuilderTree().addChild(PROP_FACETS);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        // Now test deleting the facets node should also not set the reindexing flag
+        nodeBuilder = currentNodeState.builder();
+
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild(PROP_FACETS).remove();
+
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenFacetConfigChanged_topChildren() throws Exception {
+        builder.indexRule("nt:base")
+                .property("foo1").facets();
+
+        builder.getBuilderTree().addChild(PROP_FACETS);
+        NodeState currentNodeState  = builder.build();
+        nodeBuilder = currentNodeState.builder();
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        //Add top Children prop on facets node
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_FACETS_TOP_CHILDREN,100);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        nodeBuilder = currentNodeState.builder();
+
+        //Now test with changing the value - this too shouldn't set the reindexing flag
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_FACETS_TOP_CHILDREN,200);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild(PROP_FACETS).removeProperty(FulltextIndexConstants.PROP_FACETS_TOP_CHILDREN);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenFacetConfigChanged_secure() throws Exception {
+        builder.indexRule("nt:base")
+                .property("foo1").facets();
+
+        builder.getBuilderTree().addChild(PROP_FACETS);
+
+        NodeState currentNodeState  = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        //Add top secure prop on facets node
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_SECURE_FACETS,FulltextIndexConstants.PROP_SECURE_FACETS_VALUE_SECURE);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        //Now test with changing the value - this too shouldn't set the reindexing flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_SECURE_FACETS,FulltextIndexConstants.PROP_SECURE_FACETS_VALUE_INSECURE);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild(PROP_FACETS).removeProperty(FulltextIndexConstants.PROP_SECURE_FACETS);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenFacetConfigChanged_sampleSize() throws Exception {
+        builder.indexRule("nt:base")
+                .property("foo1").facets();
+
+        builder.getBuilderTree().addChild(PROP_FACETS);
+
+        NodeState currentNodeState  = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        //Add top sample size prop on facets node
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_STATISTICAL_FACET_SAMPLE_SIZE,1000);
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        //Now test with changing the value - this too shouldn't set the reindexing flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_STATISTICAL_FACET_SAMPLE_SIZE,2000);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild(PROP_FACETS).removeProperty(FulltextIndexConstants.PROP_STATISTICAL_FACET_SAMPLE_SIZE);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void noReindexWhenIfCostPerExecAddedOrChanged() {
+        builder.indexRule("nt:base");
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").setProperty(COST_PER_EXECUTION, 2.0);
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        //Now test with changing the value - this too shouldn't set the reindexing flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").setProperty(COST_PER_EXECUTION, 3.0);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").removeProperty(COST_PER_EXECUTION);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+    }
+
+    @Test
+    public void noReindexWhenIfCostPerEntryAddedOrChanged() {
+        builder.indexRule("nt:base");
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").setProperty(COST_PER_ENTRY, 2.0);
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+
+        //Now test with changing the value - this too shouldn't set the reindexing flag
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").setProperty(COST_PER_ENTRY, 3.0);
+        currentNodeState = builder.build();
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //Now check for property delete use case
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().getChild("indexRules").getChild("nt:base").removeProperty(COST_PER_ENTRY);
+        currentNodeState = builder.build();
+
+        assertFalse(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertTrue(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+    }
+
+    @Test
+    public void reindexFlagSetWhenRequired() {
+
+        NodeState currentNodeState = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.includedPaths("/a", "/b");
+
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.includedPaths("/a", "/c");
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+        builder.getBuilderTree().removeProperty(PathFilter.PROP_INCLUDED_PATHS);
+        currentNodeState = builder.build();
+
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+    }
+
+    @Test
+    public void renidexIfFacetsNodeAddedwithSomeNewPropThatReqIndexing() throws Exception {
+        builder.indexRule("nt:base")
+                .property("foo1").facets();
+
+        NodeState currentNodeState  = builder.build();
+        nodeBuilder = currentNodeState.builder();
+
+        //Unset the reindex flag first because first build would have set it .
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().addChild(PROP_FACETS);
+
+        //Add foo prop on facets node
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty("foo","bar");
+        currentNodeState = builder.build();
+
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertFalse(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+        nodeBuilder = currentNodeState.builder();
+
+        //Now test with changing the value - this too should set the reindexing flag
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty("foo","bar2");
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertFalse(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        //now deleting the node
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.removeProperty(PROP_REFRESH_DEFN);
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().getChild(PROP_FACETS).remove();
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertFalse(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+        nodeBuilder = currentNodeState.builder();
+        nodeBuilder.setProperty(REINDEX_PROPERTY_NAME, false);
+        builder = new IndexDefinitionBuilder(nodeBuilder);
+
+        builder.getBuilderTree().addChild(PROP_FACETS);
+
+        //Add foo prop on facets node
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty("foo","bar");
+        builder.getBuilderTree().getChild(PROP_FACETS).setProperty(FulltextIndexConstants.PROP_STATISTICAL_FACET_SAMPLE_SIZE,200);
+
+        currentNodeState = builder.build();
+        assertTrue(currentNodeState.getBoolean(REINDEX_PROPERTY_NAME));
+        assertFalse(currentNodeState.getBoolean(PROP_REFRESH_DEFN));
+
+    }
+
+    @Test
     public void propRuleCustomName() throws Exception{
         builder.indexRule("nt:base").property("foo").property("bar");
         builder.indexRule("nt:base").property("fooProp", "foo2");
@@ -273,5 +789,87 @@ public class IndexDefinitionBuilderTest {
         //Type other than 'disabled' would be reset
         updated.setProperty("type", "foo");
         assertEquals("lucene", new IndexDefinitionBuilder(updated).build().getString("type"));
+    }
+
+    @Test
+    public void nodeTypeIndex() throws Exception{
+        builder.nodeTypeIndex();
+        builder.indexRule("nt:file");
+
+        NodeState state = builder.build();
+        assertTrue(state.getChildNode("indexRules").exists());
+        NodeState ntFileRule = state.getChildNode("indexRules").getChildNode("nt:file");
+        assertTrue(ntFileRule.exists());
+        assertTrue(state.getBoolean(FulltextIndexConstants.PROP_INDEX_NODE_TYPE));
+        assertFalse(ntFileRule.getBoolean(FulltextIndexConstants.PROP_SYNC));
+    }
+
+    @Test
+    public void nodeTypeIndexSync() throws Exception{
+        builder.nodeTypeIndex();
+        builder.indexRule("nt:file").sync();
+
+        NodeState state = builder.build();
+        assertTrue(state.getChildNode("indexRules").exists());
+        NodeState ntFileRule = state.getChildNode("indexRules").getChildNode("nt:file");
+        assertTrue(ntFileRule.exists());
+        assertTrue(state.getBoolean(FulltextIndexConstants.PROP_INDEX_NODE_TYPE));
+        assertTrue(ntFileRule.getBoolean(FulltextIndexConstants.PROP_SYNC));
+    }
+
+    @Test
+    public void noPropertiesNodeForEmptyRule() throws Exception{
+        builder.nodeTypeIndex();
+        builder.indexRule("nt:file").sync();
+
+        NodeState state = builder.build();
+        assertFalse(NodeStateUtils.getNode(state, "/indexRules/nt:file/properties").exists());
+    }
+
+    @Test
+    public void deprecated() {
+        NodeState state = builder.build();
+        assertFalse("By default index isn't deprecated", state.getBoolean(INDEX_DEPRECATED));
+
+        state = builder.deprecated().build();
+        assertTrue("Index must be deprecated if marked so", state.getBoolean(INDEX_DEPRECATED));
+    }
+
+    @Test
+    public void boost() {
+        builder.indexRule("nt:base")
+                .property("foo1").boost(1.0f).enclosingRule()
+                .property("foo2").boost(2.0f);
+
+        NodeState state = builder.build();
+
+        NodeState foo1 = NodeStateUtils.getNode(state, "indexRules/nt:base/properties/foo1");
+        assertTrue(foo1.exists());
+        assertEquals("Incorrectly set boost",
+                1.0f, foo1.getProperty(FIELD_BOOST).getValue(Type.DOUBLE).floatValue(), 0.0001);
+
+        NodeState foo2 = NodeStateUtils.getNode(state, "indexRules/nt:base/properties/foo2");
+        assertTrue(foo2.exists());
+        assertEquals("Incorrectly set boost",
+                2.0f, foo2.getProperty(FIELD_BOOST).getValue(Type.DOUBLE).floatValue(), 0.0001);
+    }
+
+    @Test
+    public void facets() {
+        builder.indexRule("nt:base")
+                .property("foo1").facets().enclosingRule()
+                .property("foo2").propertyIndex();
+
+        NodeState state = builder.build();
+
+        NodeState foo1 = NodeStateUtils.getNode(state, "indexRules/nt:base/properties/foo1");
+        assertTrue(foo1.exists());
+        assertTrue("Incorrectly set facets property",
+                foo1.getBoolean(PROP_FACETS));
+
+        NodeState foo2 = NodeStateUtils.getNode(state, "indexRules/nt:base/properties/foo2");
+        assertTrue(foo2.exists());
+        assertFalse("Incorrectly existing facets property",
+                foo2.hasProperty(PROP_FACETS));
     }
 }

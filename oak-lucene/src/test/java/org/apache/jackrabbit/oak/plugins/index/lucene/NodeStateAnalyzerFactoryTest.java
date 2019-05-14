@@ -55,7 +55,7 @@ import static org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstant
 import static org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.ANL_FILTERS;
 import static org.apache.jackrabbit.oak.plugins.index.lucene.LuceneIndexConstants.ANL_TOKENIZER;
 import static org.apache.jackrabbit.oak.plugins.memory.EmptyNodeState.EMPTY_NODE;
-import static org.apache.jackrabbit.oak.plugins.tree.impl.TreeConstants.OAK_CHILD_ORDER;
+import static org.apache.jackrabbit.oak.plugins.tree.TreeConstants.OAK_CHILD_ORDER;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -95,8 +95,8 @@ public class NodeStateAnalyzerFactoryTest {
         assertEquals(WhitespaceTokenizerFactory.class.getName(), analyzer.getTokenizer().getClassArg());
 
         nb.child(ANL_TOKENIZER)
-                .setProperty(ANL_NAME, "pathhierarchy")
-                .setProperty("delimiter", "#");
+            .setProperty(ANL_NAME, "pathhierarchy")
+            .setProperty("delimiter", "#");
         analyzer = (TokenizerChain) factory.createInstance(nb.getNodeState());
         assertEquals(PathHierarchyTokenizerFactory.class.getName(), analyzer.getTokenizer().getClassArg());
         assertEquals('#', getValue(analyzer.getTokenizer(), "delimiter"));
@@ -172,7 +172,7 @@ public class NodeStateAnalyzerFactoryTest {
         createFileNode(nb, "foo", testData);
 
         NodeStateResourceLoader loader = new NodeStateResourceLoader(nb.getNodeState(),
-                new ClasspathResourceLoader());
+            new ClasspathResourceLoader());
         assertArrayEquals(testData, IOUtils.toByteArray(loader.openResource("foo")));
     }
 

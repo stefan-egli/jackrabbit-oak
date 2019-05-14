@@ -24,6 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 import org.apache.jackrabbit.oak.commons.concurrent.ExecutorCloser;
 import org.apache.jackrabbit.oak.segment.SegmentNotFoundExceptionListener;
+import org.apache.jackrabbit.oak.segment.compaction.SegmentGCOptions;
 import org.apache.jackrabbit.oak.segment.file.FileStore;
 import org.apache.jackrabbit.oak.segment.file.FileStoreBuilder;
 import org.apache.jackrabbit.oak.stats.DefaultStatisticsProvider;
@@ -35,7 +36,7 @@ public class TemporaryFileStore extends ExternalResource {
     private final TemporaryFolder folder;
 
     private final TemporaryBlobStore blobStore;
-    
+
     private final boolean standby;
 
     private ScheduledExecutorService executor;
@@ -61,12 +62,17 @@ public class TemporaryFileStore extends ExternalResource {
                 .withMaxFileSize(1)
                 .withMemoryMapping(false)
                 .withNodeDeduplicationCacheSize(1)
-                .withSegmentCacheSize(0)
+                .withSegmentCacheSize(256)
                 .withStringCacheSize(0)
                 .withTemplateCacheSize(0)
                 .withStatisticsProvider(new DefaultStatisticsProvider(executor));
         if (standby) {
-            builder.withSnfeListener(SegmentNotFoundExceptionListener.IGNORE_SNFE);
+            SegmentGCOptions gcOptions = SegmentGCOptions.defaultGCOptions()
+                .setRetainedGenerations(1);
+            builder
+                .withGCOptions(gcOptions)
+                .withSnfeListener(SegmentNotFoundExceptionListener.IGNORE_SNFE)
+                .withEagerSegmentCaching(true);
         }
         if (blobStore != null) {
             builder.withBlobStore(blobStore.blobStore());

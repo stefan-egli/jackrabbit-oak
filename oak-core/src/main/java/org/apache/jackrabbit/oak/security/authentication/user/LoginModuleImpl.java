@@ -22,9 +22,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.jcr.Credentials;
 import javax.jcr.GuestCredentials;
 import javax.jcr.SimpleCredentials;
@@ -46,6 +43,8 @@ import org.apache.jackrabbit.oak.spi.security.user.UserAuthenticationFactory;
 import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.security.user.util.UserUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -102,7 +101,7 @@ public final class LoginModuleImpl extends AbstractLoginModule {
 
     private static final Logger log = LoggerFactory.getLogger(LoginModuleImpl.class);
 
-    protected static final Set<Class> SUPPORTED_CREDENTIALS = new HashSet<Class>(3);
+    protected static final Set<Class> SUPPORTED_CREDENTIALS = new HashSet<>(3);
     static {
         SUPPORTED_CREDENTIALS.add(SimpleCredentials.class);
         SUPPORTED_CREDENTIALS.add(GuestCredentials.class);
@@ -168,17 +167,20 @@ public final class LoginModuleImpl extends AbstractLoginModule {
                 } else if (userId != null) {
                     principals.addAll(getPrincipals(userId));
                 }
-                subject.getPublicCredentials().add(credentials);
+                if (credentials != null) {
+                    subject.getPublicCredentials().add(credentials);
+                }
                 setAuthInfo(createAuthInfo(principals), subject);
             } else {
                 log.debug("Could not add information to read only subject {}", subject);
             }
+            clearState();
             return true;
         }
     }
 
     //------------------------------------------------< AbstractLoginModule >---
-    @Nonnull
+    @NotNull
     @Override
     protected Set<Class> getSupportedCredentials() {
         return SUPPORTED_CREDENTIALS;
@@ -194,35 +196,23 @@ public final class LoginModuleImpl extends AbstractLoginModule {
     }
 
     //--------------------------------------------------------------------------
-    @CheckForNull
-    private String getLoginId(@CheckForNull PreAuthenticatedLogin preAuthenticatedLogin) {
+    @Nullable
+    private String getLoginId(@Nullable PreAuthenticatedLogin preAuthenticatedLogin) {
         if (preAuthenticatedLogin != null) {
             return preAuthenticatedLogin.getUserId();
         }
 
         String uid = null;
-        if (credentials != null) {
-            if (credentials instanceof SimpleCredentials) {
-                uid = ((SimpleCredentials) credentials).getUserID();
-            } else if (credentials instanceof GuestCredentials) {
-                uid = getAnonymousId();
-            } else if (credentials instanceof ImpersonationCredentials) {
-                Credentials bc = ((ImpersonationCredentials) credentials).getBaseCredentials();
-                if (bc instanceof SimpleCredentials) {
-                    uid = ((SimpleCredentials) bc).getUserID();
-                }
-            } else {
-                try {
-                    NameCallback callback = new NameCallback("User-ID: ");
-                    callbackHandler.handle(new Callback[]{callback});
-                    uid = callback.getName();
-                } catch (UnsupportedCallbackException e) {
-                    log.warn("Credentials- or NameCallback must be supported");
-                } catch (IOException e) {
-                    log.error("Name-Callback failed: " + e.getMessage());
-                }
+        if (credentials instanceof SimpleCredentials) {
+            uid = ((SimpleCredentials) credentials).getUserID();
+        } else if (credentials instanceof GuestCredentials) {
+            uid = getAnonymousId();
+        } else if (credentials instanceof ImpersonationCredentials) {
+            Credentials bc = ((ImpersonationCredentials) credentials).getBaseCredentials();
+            if (bc instanceof SimpleCredentials) {
+                uid = ((SimpleCredentials) bc).getUserID();
             }
-        }
+        } // null or other (unsupported) type of credentials (see SUPPORTED_CREDENTIALS)
 
         if (uid == null) {
             uid = getSharedLoginName();
@@ -230,6 +220,7 @@ public final class LoginModuleImpl extends AbstractLoginModule {
         return uid;
     }
 
+    @Nullable
     private String getAnonymousId() {
         SecurityProvider sp = getSecurityProvider();
         if (sp == null) {
@@ -240,7 +231,7 @@ public final class LoginModuleImpl extends AbstractLoginModule {
         }
     }
 
-    @CheckForNull
+    @Nullable
     private Authentication getUserAuthentication(@Nullable String loginName) {
         SecurityProvider securityProvider = getSecurityProvider();
         Root root = getRoot();
@@ -256,19 +247,17 @@ public final class LoginModuleImpl extends AbstractLoginModule {
         return null;
     }
 
-    private AuthInfo createAuthInfo(@Nonnull Set<? extends Principal> principals) {
+    private AuthInfo createAuthInfo(@NotNull Set<? extends Principal> principals) {
         Credentials creds;
         if (credentials instanceof ImpersonationCredentials) {
             creds = ((ImpersonationCredentials) credentials).getBaseCredentials();
         } else {
             creds = credentials;
         }
-        Map<String, Object> attributes = new HashMap<String, Object>();
+        Map<String, Object> attributes = new HashMap<>();
         Object shared = sharedState.get(SHARED_KEY_ATTRIBUTES);
         if (shared instanceof Map) {
-            for (Object key : ((Map) shared).keySet()) {
-                attributes.put(key.toString(), ((Map) shared).get(key));
-            }
+            ((Map<?,?>) shared).forEach((key, value) -> attributes.put(key.toString(), value));
         } else if (creds instanceof SimpleCredentials) {
             SimpleCredentials sc = (SimpleCredentials) creds;
             for (String attrName : sc.getAttributeNames()) {

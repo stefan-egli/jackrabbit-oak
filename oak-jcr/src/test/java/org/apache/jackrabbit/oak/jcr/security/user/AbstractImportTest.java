@@ -23,7 +23,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
-import javax.annotation.CheckForNull;
 import javax.jcr.ImportUUIDBehavior;
 import javax.jcr.Node;
 import javax.jcr.Repository;
@@ -38,7 +37,7 @@ import org.apache.jackrabbit.api.security.user.Group;
 import org.apache.jackrabbit.api.security.user.UserManager;
 import org.apache.jackrabbit.oak.jcr.Jcr;
 import org.apache.jackrabbit.oak.query.QueryEngineSettings;
-import org.apache.jackrabbit.oak.security.SecurityProviderImpl;
+import org.apache.jackrabbit.oak.security.internal.SecurityProviderBuilder;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.principal.PrincipalImpl;
@@ -46,6 +45,7 @@ import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.xml.ProtectedItemImporter;
 import org.apache.jackrabbit.test.NotExecutableException;
+import org.jetbrains.annotations.Nullable;
 import org.junit.After;
 import org.junit.Before;
 
@@ -74,9 +74,9 @@ public abstract class AbstractImportTest {
     public void before() throws Exception {
         ConfigurationParameters config = getConfigurationParameters();
         if (config != null) {
-            securityProvider = new SecurityProviderImpl(config);
+            securityProvider = SecurityProviderBuilder.newBuilder().with(config).build();
         } else {
-            securityProvider = new SecurityProviderImpl();
+            securityProvider = SecurityProviderBuilder.newBuilder().build();
         }
         QueryEngineSettings queryEngineSettings = new QueryEngineSettings();
         queryEngineSettings.setFailTraversal(true);
@@ -139,7 +139,7 @@ public abstract class AbstractImportTest {
         }
     }
 
-    @CheckForNull
+    @Nullable
     protected ConfigurationParameters getConfigurationParameters() {
         String importBehavior = getImportBehavior();
         if (importBehavior != null) {

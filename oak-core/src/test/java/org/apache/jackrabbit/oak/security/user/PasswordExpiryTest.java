@@ -26,13 +26,13 @@ import org.apache.jackrabbit.oak.AbstractSecurityTest;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.api.Type;
-import org.apache.jackrabbit.oak.plugins.nodetype.NodeTypeConstants;
+import org.apache.jackrabbit.oak.spi.nodetype.NodeTypeConstants;
 import org.apache.jackrabbit.oak.plugins.nodetype.ReadOnlyNodeTypeManager;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.authentication.Authentication;
 import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
-import org.apache.jackrabbit.oak.util.TreeUtil;
+import org.apache.jackrabbit.oak.plugins.tree.TreeUtil;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -153,5 +153,11 @@ public class PasswordExpiryTest extends AbstractSecurityTest {
         getTestUser().changePassword(userId);
         root.commit();
         assertTrue(a.authenticate(new SimpleCredentials(userId, userId.toCharArray())));
+    }
+
+    @Test
+    public void testByDefaultAdminHasNoPwNode() throws Exception {
+        User adminUser = getUserManager(root).getAuthorizable(getUserConfiguration().getParameters().getConfigValue(UserConstants.PARAM_ADMIN_ID, UserConstants.DEFAULT_ADMIN_ID), User.class);
+        assertFalse(root.getTree(adminUser.getPath()).getChild(UserConstants.REP_PWD).exists());
     }
 }

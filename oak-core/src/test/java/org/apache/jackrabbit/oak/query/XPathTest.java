@@ -16,13 +16,12 @@
  */
 package org.apache.jackrabbit.oak.query;
 
-import static org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent.INITIAL_CONTENT;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.text.ParseException;
 
-import org.apache.jackrabbit.oak.query.ast.NodeTypeInfoProvider;
 import org.apache.jackrabbit.oak.query.xpath.XPathToSQL2Converter;
 import org.junit.Test;
 
@@ -31,11 +30,72 @@ import org.junit.Test;
  */
 public class XPathTest {
     
-    private final NodeTypeInfoProvider nodeTypes =
-            new NodeStateNodeTypeInfoProvider(INITIAL_CONTENT);
+    private final SQL2Parser parser = SQL2ParserTest.createTestSQL2Parser();
+    
+    @Test
+    public void complexQuery() throws ParseException {
+        for(int n = 1; n < 15; n++) {
+            for(int m = 1; m < 15; m++) {
+                complexQuery(n, m);
+            }            
+        }
+    }
+    
+    private void complexQuery(int n, int m) throws ParseException {
+        StringBuilder buff = new StringBuilder();
+        buff.append("/jcr:root//*[");
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                buff.append("and ");
+            }
+            buff.append("(");
+            for (int j = 0; j < m; j++) {
+                if (j > 0) {
+                    buff.append("or ");
+                }
+                buff.append("@x" + j + " = " + j);
+            }
+            buff.append(")\n");
+        }
+        buff.append("]");
+        String xpath = buff.toString();
+        String sql2 = new XPathToSQL2Converter().convert(xpath);
+        assertTrue("Length: " + sql2.length(), sql2.length() < 200000);
+        Query q = parser.parse(sql2, false);
+        q.buildAlternativeQuery();
+    }
     
     @Test
     public void queryOptions() throws ParseException {
+        verify("(/jcr:root/a//* | /jcr:root/b//*) order by @jcr:score", 
+                "select [jcr:path], [jcr:score], * " +
+                "from [nt:base] as a " +
+                "where isdescendantnode(a, '/a') " +
+                "/* xpath: /jcr:root/a//* \n" +
+                "order by @jcr:score */ " +
+                "union select [jcr:path], [jcr:score], * " +
+                "from [nt:base] as a " +
+                "where isdescendantnode(a, '/b') " +
+                "/* xpath: /jcr:root/b//* " +
+                "order by @jcr:score */ " +
+                "order by [jcr:score]");         
+        verify("(/jcr:root/a//* | /jcr:root/b//* | /jcr:root/c//*) order by @jcr:score", 
+                "select [jcr:path], [jcr:score], * " +
+                "from [nt:base] as a " +
+                "where isdescendantnode(a, '/a') " +
+                "/* xpath: /jcr:root/a//* \n" +
+                "order by @jcr:score */ " +
+                "union select [jcr:path], [jcr:score], * " +
+                "from [nt:base] as a " +
+                "where isdescendantnode(a, '/b') " +
+                "/* xpath: /jcr:root/b//* \n" +
+                "order by @jcr:score */ " +
+                "union select [jcr:path], [jcr:score], * " +
+                "from [nt:base] as a " +
+                "where isdescendantnode(a, '/c') " +
+                "/* xpath: /jcr:root/c//* " +
+                "order by @jcr:score */ " +
+                "order by [jcr:score]"); 
         verify("//(element(*, nt:address))", 
                 "select [jcr:path], [jcr:score], * " +
                 "from [nt:address] as a " +
@@ -248,7 +308,21 @@ public class XPathTest {
                 "from [nt:base] as a " +
                 "where [a] is not null " +
                 "and isdescendantnode(a, '/lib') " +
-                "/* xpath: /jcr:root/lib//*[@a] */");        
+                "/* xpath: /jcr:root/lib//*[@a] */");
+        // "order by @jcr:score" is kept on xpath to sql2 conversion 
+        // (because the default is ascending)
+        verify("/jcr:root/content//(element(*, nt:base) | element(*, nt:folder)) order by @jcr:score",
+                "select [jcr:path], [jcr:score], * from [nt:base] as a where isdescendantnode(a, '/content') " +
+                "/* xpath: /jcr:root/content//element(*, nt:base)  order by @jcr:score */ " +
+                "union select [jcr:path], [jcr:score], * from [nt:folder] as a where isdescendantnode(a, '/content') " +
+                "/* xpath: /jcr:root/content// element(*, nt:folder) order by @jcr:score */ " +
+                "order by [jcr:score]");
+        // "order by @jcr:score descending" is ignored on xpath to sql2 conversion
+        verify("/jcr:root/content//(element(*, nt:base) | element(*, nt:folder)) order by @jcr:score descending",
+                "select [jcr:path], [jcr:score], * from [nt:base] as a where isdescendantnode(a, '/content') " +
+                "/* xpath: /jcr:root/content//element(*, nt:base)  order by @jcr:score descending */ " +
+                "union select [jcr:path], [jcr:score], * from [nt:folder] as a where isdescendantnode(a, '/content') " +
+                "/* xpath: /jcr:root/content// element(*, nt:folder) order by @jcr:score descending */");
     }
 
     private void verify(String xpath, String expectedSql2) throws ParseException {
@@ -256,12 +330,11 @@ public class XPathTest {
         sql2 = formatSQL(sql2);
         expectedSql2 = formatSQL(expectedSql2);
         assertEquals(expectedSql2, sql2);
-        SQL2Parser p = new SQL2Parser(null, nodeTypes, new QueryEngineSettings());
-        p.parse(sql2);
+        parser.parse(sql2);
     }
     
     static String formatSQL(String sql) {
-        sql = sql.replace("\n", " ");
+        sql = sql.replace('\n', ' ');
         sql = sql.replaceAll(" from ", "\nfrom ");
         sql = sql.replaceAll(" where ", "\nwhere ");
         sql = sql.replaceAll(" and ", "\nand ");

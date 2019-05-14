@@ -19,287 +19,434 @@
 
 package org.apache.jackrabbit.oak.segment.file.tooling;
 
-import static com.google.common.collect.Maps.newHashMap;
-import static java.text.DateFormat.getDateTimeInstance;
 import static org.apache.jackrabbit.oak.api.Type.BINARIES;
 import static org.apache.jackrabbit.oak.api.Type.BINARY;
-import static org.apache.jackrabbit.oak.commons.IOUtils.humanReadableByteCount;
 import static org.apache.jackrabbit.oak.commons.PathUtils.concat;
-import static org.apache.jackrabbit.oak.commons.PathUtils.denotesRoot;
-import static org.apache.jackrabbit.oak.commons.PathUtils.getName;
-import static org.apache.jackrabbit.oak.commons.PathUtils.getParentPath;
-import static org.apache.jackrabbit.oak.segment.file.FileStoreBuilder.fileStoreBuilder;
-import static org.apache.jackrabbit.oak.spi.state.NodeStateUtils.getNode;
 
-import java.io.Closeable;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.PrintWriter;
-import java.text.MessageFormat;
-import java.util.Date;
-import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.jackrabbit.oak.api.Blob;
 import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Type;
 import org.apache.jackrabbit.oak.segment.SegmentBlob;
+import org.apache.jackrabbit.oak.segment.SegmentNodeStore;
 import org.apache.jackrabbit.oak.segment.SegmentNodeStoreBuilders;
-import org.apache.jackrabbit.oak.segment.file.FileStore;
-import org.apache.jackrabbit.oak.segment.file.FileStoreBuilder;
-import org.apache.jackrabbit.oak.segment.file.IOMonitorAdapter;
-import org.apache.jackrabbit.oak.segment.file.InvalidFileStoreVersionException;
+import org.apache.jackrabbit.oak.segment.SegmentNotFoundException;
 import org.apache.jackrabbit.oak.segment.file.JournalEntry;
-import org.apache.jackrabbit.oak.segment.file.JournalReader;
 import org.apache.jackrabbit.oak.segment.file.ReadOnlyFileStore;
 import org.apache.jackrabbit.oak.spi.state.ChildNodeEntry;
 import org.apache.jackrabbit.oak.spi.state.NodeState;
+import org.apache.jackrabbit.oak.spi.state.NodeStateUtils;
 
-/**
- * Utility for checking the files of a
- * {@link FileStore} for inconsistency and
- * reporting that latest consistent revision.
- */
-public class ConsistencyChecker implements Closeable {
+public class ConsistencyChecker {
 
-    private static class StatisticsIOMonitor extends IOMonitorAdapter {
+    private static NodeState getDescendantOrNull(NodeState root, String path) {
+        NodeState descendant = NodeStateUtils.getNode(root, path);
+        if (descendant.exists()) {
+            return descendant;
+        }
+        return null;
+    }
 
-        private final AtomicLong ioOperations = new AtomicLong(0);
+    private static class PathToCheck {
 
-        private final AtomicLong readBytes = new AtomicLong(0);
+        final String path;
 
-        private final AtomicLong readTime = new AtomicLong(0);
+        JournalEntry journalEntry;
 
-        @Override
-        public void afterSegmentRead(File file, long msb, long lsb, int length, long elapsed) {
-            ioOperations.incrementAndGet();
-            readBytes.addAndGet(length);
-            readTime.addAndGet(elapsed);
+        Set<String> corruptPaths = new LinkedHashSet<>();
+
+        PathToCheck(String path) {
+            this.path = path;
         }
 
     }
 
-    private final StatisticsIOMonitor statisticsIOMonitor = new StatisticsIOMonitor();
-
-    private final ReadOnlyFileStore store;
-
-    private final long debugInterval;
-    
-    private final PrintWriter outWriter;
-    
-    private final PrintWriter errWriter;
-
-    private int nodeCount;
-    
-    private int propertyCount;
-
-    /**
-     * Run a full traversal consistency check.
-     *
-     * @param directory  directory containing the tar files
-     * @param journalFileName  name of the journal file containing the revision history
-     * @param debugInterval    number of seconds between printing progress information to
-     *                         the console during the full traversal phase.
-     * @param checkBinaries    if {@code true} full content of binary properties will be scanned
-     * @param filterPaths      collection of repository paths to be checked                         
-     * @param ioStatistics     if {@code true} prints I/O statistics gathered while consistency 
-     *                         check was performed
-     * @param outWriter        text output stream writer
-     * @param errWriter        text error stream writer                        
-     * @throws IOException
-     */
-    public static void checkConsistency(
-            File directory,
-            String journalFileName,
-            long debugInterval,
-            boolean checkBinaries,
-            Set<String> filterPaths,
-            boolean ioStatistics,
-            PrintWriter outWriter,
-            PrintWriter errWriter
-    ) throws IOException, InvalidFileStoreVersionException {
-        try (
-                JournalReader journal = new JournalReader(new File(directory, journalFileName));
-                ConsistencyChecker checker = new ConsistencyChecker(directory, debugInterval, ioStatistics, outWriter, errWriter)
-        ) {
-            Map<String, JournalEntry> pathToJournalEntry = newHashMap();
-            Map<String, Set<String>> pathToCorruptPaths = newHashMap();
-            for (String path : filterPaths) {
-                pathToCorruptPaths.put(path, new HashSet<String>());
-            }
-            
-            int count = 0;
-            int revisionCount = 0;
-
-            while (journal.hasNext() && count < filterPaths.size()) {
-                JournalEntry journalEntry = journal.next();
-                checker.print("Checking revision {0}", journalEntry.getRevision());
-                
-                try {
-                    revisionCount++;
-                    
-                    for (String path : filterPaths) {
-                        if (pathToJournalEntry.get(path) == null) {
-                            
-                            Set<String> corruptPaths = pathToCorruptPaths.get(path);
-                            String corruptPath = checker.checkPathAtRevision(journalEntry.getRevision(), corruptPaths, path, checkBinaries);
-
-                            if (corruptPath == null) {
-                                checker.print("Path {0} is consistent", path);
-                                pathToJournalEntry.put(path, journalEntry);
-                                count++;
-                            } else {
-                                corruptPaths.add(corruptPath);
-                            }
-                        }
-                    }
-                } catch (IllegalArgumentException e) {
-                    checker.printError("Skipping invalid record id {0}", journalEntry.getRevision());
-                }
-            }
-            
-            checker.print("Searched through {0} revisions", revisionCount);
-            
-            if (count == 0) {
-                checker.print("No good revision found");
-            } else {
-                for (String path : filterPaths) {
-                    JournalEntry journalEntry = pathToJournalEntry.get(path);
-                    String revision = journalEntry != null ? journalEntry.getRevision() : null;
-                    long timestamp = journalEntry != null ? journalEntry.getTimestamp() : -1L;
-                    
-                    checker.print("Latest good revision for path {0} is {1} from {2}", path,
-                            toString(revision), toString(timestamp));
-                }
-            }
-
-            if (ioStatistics) {
-                checker.print(
-                        "[I/O] Segment read: Number of operations: {0}",
-                        checker.statisticsIOMonitor.ioOperations
-                );
-                checker.print(
-                        "[I/O] Segment read: Total size: {0} ({1} bytes)",
-                        humanReadableByteCount(checker.statisticsIOMonitor.readBytes.get()),
-                        checker.statisticsIOMonitor.readBytes
-                );
-                checker.print(
-                        "[I/O] Segment read: Total time: {0} ns",
-                        checker.statisticsIOMonitor.readTime
-                );
-            }
-        }
+    protected void onCheckRevision(String revision) {
+        // Do nothing.
     }
 
-    private static String toString(String revision) {
-        if (revision != null) {
+    protected void onCheckHead() {
+        // Do nothing.
+    }
+
+    protected  void onCheckChekpoints() {
+        // Do nothing.
+    }
+
+    protected  void onCheckCheckpoint(String checkpoint) {
+        // Do nothing.
+    }
+
+    protected void onCheckpointNotFoundInRevision(String checkpoint) {
+        // Do nothing.
+    }
+
+    protected void onCheckRevisionError(String revision, Exception e) {
+        // Do nothing.
+    }
+
+    protected void onConsistentPath(String path) {
+        // Do nothing.
+    }
+
+    protected void onPathNotFound(String path) {
+        // Do nothing.
+    }
+
+    protected void onCheckTree(String path) {
+        // Do nothing.
+    }
+
+    protected void onCheckTreeEnd() {
+        // Do nothing.
+    }
+
+    protected void onCheckNode(String path) {
+        // Do nothing.
+    }
+
+    protected void onCheckProperty() {
+        // Do nothing.
+    }
+
+    protected void onCheckPropertyEnd(String path, PropertyState property) {
+        // Do nothing.
+    }
+
+    protected void onCheckNodeError(String path, Exception e) {
+        // Do nothing.
+    }
+
+    protected void onCheckTreeError(String path, Exception e) {
+        // Do nothing.
+    }
+
+    public static class Revision {
+
+        private final String revision;
+
+        private final long timestamp;
+
+        private Revision(String revision, long timestamp) {
+            this.revision = revision;
+            this.timestamp = timestamp;
+        }
+
+        public String getRevision() {
             return revision;
-        } else {
-            return "none";
         }
-    }
-    
-    private static String toString(long timestamp) {
-        if (timestamp != -1L) {
-            return getDateTimeInstance().format(new Date(timestamp));
-        } else {
-            return "unknown date";
+
+        public long getTimestamp() {
+            return timestamp;
         }
-    }
-    
-    /**
-     * Create a new consistency checker instance
-     *
-     * @param directory        directory containing the tar files
-     * @param debugInterval    number of seconds between printing progress information to
-     *                         the console during the full traversal phase.
-     * @param ioStatistics     if {@code true} prints I/O statistics gathered while consistency 
-     *                         check was performed
-     * @param outWriter        text output stream writer
-     * @param errWriter        text error stream writer                        
-     * @throws IOException
-     */
-    public ConsistencyChecker(File directory, long debugInterval, boolean ioStatistics, PrintWriter outWriter,
-            PrintWriter errWriter) throws IOException, InvalidFileStoreVersionException {
-        FileStoreBuilder builder = fileStoreBuilder(directory);
-        if (ioStatistics) {
-            builder.withIOMonitor(statisticsIOMonitor);
-        }
-        this.store = builder.buildReadOnly();
-        this.debugInterval = debugInterval;
-        this.outWriter = outWriter;
-        this.errWriter = errWriter;
+
     }
 
+    public static class ConsistencyCheckResult {
 
-    /**
-     * Checks the consistency of the supplied {@code paths} at the given {@code revision}, 
-     * starting first with already known {@code corruptPaths}.
-     * 
-     * @param revision      revision to be checked
-     * @param corruptPaths  already known corrupt paths from previous revisions
-     * @param path          path on which to run consistency check, 
-     *                      provided there are no corrupt paths.
-     * @param checkBinaries if {@code true} full content of binary properties will be scanned
-     * @return              {@code null}, if the content tree rooted at path is consistent 
-     *                      in this revision or the path of the first inconsistency otherwise.  
-     */
-    public String checkPathAtRevision(String revision, Set<String> corruptPaths, String path, boolean checkBinaries) {
-        String result = null;
-        
-        store.setRevision(revision);
-        NodeState root = SegmentNodeStoreBuilders.builder(store).build().getRoot();
+        private ConsistencyCheckResult() {
+            // Prevent external instantiation.
+        }
 
-        for (String corruptPath : corruptPaths) {
-            try {
-                NodeWrapper wrapper = NodeWrapper.deriveTraversableNodeOnPath(root, corruptPath);
-                result = checkNode(wrapper.node, wrapper.path, checkBinaries);
+        private final Map<String, Revision> headRevisions = new HashMap<>();
 
-                if (result != null) {
-                    return result;
-                }
-            } catch (IllegalArgumentException e) {
-                debug("Path {0} not found", corruptPath);
+        private final Map<String, Map<String, Revision>> checkpointRevisions = new HashMap<>();
+
+        private Revision overallRevision;
+
+        private int checkedRevisionsCount;
+
+        public int getCheckedRevisionsCount() {
+            return checkedRevisionsCount;
+        }
+
+        public Revision getOverallRevision() {
+            return overallRevision;
+        }
+
+        public Map<String, Revision> getHeadRevisions() {
+            return headRevisions;
+        }
+
+        public Map<String, Map<String, Revision>> getCheckpointRevisions() {
+            return checkpointRevisions;
+        }
+
+    }
+
+    private boolean isPathInvalid(NodeState root, String path, boolean binaries) {
+        NodeState node = getDescendantOrNull(root, path);
+
+        if (node == null) {
+            onPathNotFound(path);
+            return true;
+        }
+
+        return checkNode(node, path, binaries) != null;
+    }
+
+    private String findFirstCorruptedPathInSet(NodeState root, Set<String> corruptedPaths, boolean binaries) {
+        for (String corruptedPath : corruptedPaths) {
+            if (isPathInvalid(root, corruptedPath, binaries)) {
+                return corruptedPath;
+            }
+        }
+        return null;
+    }
+
+    private String findFirstCorruptedPathInTree(NodeState root, String path, boolean binaries) {
+        NodeState node = getDescendantOrNull(root, path);
+
+        if (node == null) {
+            onPathNotFound(path);
+            return path;
+        }
+
+        return checkNodeAndDescendants(node, path, binaries);
+    }
+
+    private String checkTreeConsistency(NodeState root, String path, Set<String> corruptedPaths, boolean binaries) {
+        String corruptedPath = findFirstCorruptedPathInSet(root, corruptedPaths, binaries);
+
+        if (corruptedPath != null) {
+            return corruptedPath;
+        }
+
+        onCheckTree(path);
+        corruptedPath = findFirstCorruptedPathInTree(root, path, binaries);
+        onCheckTreeEnd();
+        return corruptedPath;
+    }
+
+    private boolean checkPathConsistency(NodeState root, PathToCheck ptc, JournalEntry entry, boolean binaries) {
+        if (ptc.journalEntry != null) {
+            return true;
+        }
+
+        String corruptPath = checkTreeConsistency(root, ptc.path, ptc.corruptPaths, binaries);
+
+        if (corruptPath != null) {
+            ptc.corruptPaths.add(corruptPath);
+            return false;
+        }
+
+        onConsistentPath(ptc.path);
+        ptc.journalEntry = entry;
+        return true;
+    }
+
+    private boolean checkAllPathsConsistency(NodeState root, List<PathToCheck> paths, JournalEntry entry, boolean binaries) {
+        boolean result = true;
+
+        for (PathToCheck ptc : paths) {
+            if (!checkPathConsistency(root, ptc, entry, binaries)) {
+                result = false;
             }
         }
 
-        nodeCount = 0;
-        propertyCount = 0;
-
-        print("Checking {0}", path);
-        
-        try {        
-            NodeWrapper wrapper = NodeWrapper.deriveTraversableNodeOnPath(root, path);
-            result = checkNodeAndDescendants(wrapper.node, wrapper.path, checkBinaries);
-            print("Checked {0} nodes and {1} properties", nodeCount, propertyCount);
-            
-            return result;
-        } catch (IllegalArgumentException e) {
-            printError("Path {0} not found", path);
-            return path;
-        } 
+        return result;
     }
-    
+
+    private boolean checkHeadConsistency(SegmentNodeStore store, List<PathToCheck> paths, JournalEntry entry, boolean binaries) {
+        boolean allConsistent = paths.stream().allMatch(p -> p.journalEntry != null);
+
+        if (allConsistent) {
+            return true;
+        }
+
+        onCheckHead();
+        return checkAllPathsConsistency(store.getRoot(), paths, entry, binaries);
+    }
+
+    private boolean checkCheckpointConsistency(SegmentNodeStore store, String checkpoint, List<PathToCheck> paths, JournalEntry entry, boolean binaries) {
+        boolean allConsistent = paths.stream().allMatch(p -> p.journalEntry != null);
+
+        if (allConsistent) {
+            return true;
+        }
+
+        onCheckCheckpoint(checkpoint);
+
+        NodeState root = store.retrieve(checkpoint);
+
+        if (root == null) {
+            onCheckpointNotFoundInRevision(checkpoint);
+            return false;
+        }
+
+        return checkAllPathsConsistency(root, paths, entry, binaries);
+    }
+
+    private boolean checkCheckpointsConsistency(SegmentNodeStore store, Map<String, List<PathToCheck>> paths, JournalEntry entry, boolean binaries) {
+        boolean result = true;
+        for (Entry<String, List<PathToCheck>> e : paths.entrySet()) {
+            if (!checkCheckpointConsistency(store, e.getKey(), e.getValue(), entry, binaries)) {
+                result = false;
+            }
+        }
+        return result;
+    }
+
+    private boolean allPathsConsistent(List<PathToCheck> headPaths, Map<String, List<PathToCheck>> checkpointPaths) {
+        for (PathToCheck path : headPaths) {
+            if (path.journalEntry == null) {
+                return false;
+            }
+        }
+
+        for (Entry<String, List<PathToCheck>> e : checkpointPaths.entrySet()) {
+            for (PathToCheck path : e.getValue()) {
+                if (path.journalEntry == null) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private boolean shouldCheckCheckpointsConsistency(Map<String, List<PathToCheck>> paths) {
+        return paths
+            .values()
+            .stream()
+            .flatMap(List::stream)
+            .anyMatch(p -> p.journalEntry == null);
+    }
+
+    /**
+     * Check the consistency of a given subtree and returns the first
+     * inconsistent path. If provided, this method probes a set of inconsistent
+     * paths before performing a full traversal of the subtree.
+     *
+     * @param root           The root node of the subtree.
+     * @param corruptedPaths A set of possibly inconsistent paths.
+     * @param binaries       Whether to check binaries for consistency.
+     * @return The first inconsistent path or {@code null}. The path might be
+     * either one of the provided inconsistent paths or a new one discovered
+     * during a full traversal of the tree.
+     */
+    public String checkTreeConsistency(NodeState root, Set<String> corruptedPaths, boolean binaries) {
+        return checkTreeConsistency(root, "/", corruptedPaths, binaries);
+    }
+
+    public final ConsistencyCheckResult checkConsistency(
+        ReadOnlyFileStore store,
+        Iterator<JournalEntry> journal,
+        boolean head,
+        Set<String> checkpoints,
+        Set<String> paths,
+        boolean binaries
+    ) {
+        List<PathToCheck> headPaths = new ArrayList<>();
+        Map<String, List<PathToCheck>> checkpointPaths = new HashMap<>();
+
+        int revisionCount = 0;
+
+        for (String path : paths) {
+            if (head) {
+                headPaths.add(new PathToCheck(path));
+            }
+
+            for (String checkpoint : checkpoints) {
+                checkpointPaths
+                    .computeIfAbsent(checkpoint, k -> new ArrayList<>())
+                    .add(new PathToCheck(path));
+            }
+        }
+
+        JournalEntry lastValidJournalEntry = null;
+
+        SegmentNodeStore sns = SegmentNodeStoreBuilders.builder(store).build();
+
+        while (journal.hasNext()) {
+            JournalEntry journalEntry = journal.next();
+            String revision = journalEntry.getRevision();
+
+            try {
+                revisionCount++;
+                store.setRevision(revision);
+                onCheckRevision(revision);
+
+                // Check the consistency of both the head and the checkpoints.
+                // If both are consistent, the current journal entry is the
+                // overall valid entry.
+
+                boolean overall = checkHeadConsistency(sns, headPaths, journalEntry, binaries);
+
+                if (shouldCheckCheckpointsConsistency(checkpointPaths)) {
+                    onCheckChekpoints();
+                    overall = overall && checkCheckpointsConsistency(sns, checkpointPaths, journalEntry, binaries);
+                }
+
+                if (overall) {
+                    lastValidJournalEntry = journalEntry;
+                }
+
+                // If every PathToCheck is assigned to a JournalEntry, stop
+                // looping through the journal.
+
+                if (allPathsConsistent(headPaths, checkpointPaths)) {
+                    break;
+                }
+            } catch (IllegalArgumentException | SegmentNotFoundException e) {
+                onCheckRevisionError(revision, e);
+            }
+        }
+
+        ConsistencyCheckResult result = new ConsistencyCheckResult();
+
+        result.checkedRevisionsCount = revisionCount;
+        result.overallRevision = newRevisionOrNull(lastValidJournalEntry);
+
+        for (PathToCheck path : headPaths) {
+            result.headRevisions.put(path.path, newRevisionOrNull(path.journalEntry));
+        }
+
+        for (String checkpoint : checkpoints) {
+            for (PathToCheck path : checkpointPaths.get(checkpoint)) {
+                result.checkpointRevisions
+                    .computeIfAbsent(checkpoint, s -> new HashMap<>())
+                    .put(path.path, newRevisionOrNull(path.journalEntry));
+            }
+        }
+
+        return result;
+    }
+
+    private static Revision newRevisionOrNull(JournalEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        return new Revision(entry.getRevision(), entry.getTimestamp());
+    }
+
     /**
      * Checks the consistency of a node and its properties at the given path.
-     * 
-     * @param node              node to be checked
-     * @param path              path of the node
-     * @param checkBinaries     if {@code true} full content of binary properties will be scanned
-     * @return                  {@code null}, if the node is consistent, 
-     *                          or the path of the first inconsistency otherwise.
+     *
+     * @param node          node to be checked
+     * @param path          path of the node
+     * @param checkBinaries if {@code true} full content of binary properties
+     *                      will be scanned
+     * @return {@code null}, if the node is consistent, or the path of the first
+     * inconsistency otherwise.
      */
     private String checkNode(NodeState node, String path, boolean checkBinaries) {
         try {
-            debug("Traversing {0}", path);
-            nodeCount++;
+            onCheckNode(path);
             for (PropertyState propertyState : node.getProperties()) {
                 Type<?> type = propertyState.getType();
                 boolean checked = false;
-                
+
                 if (type == BINARY) {
                     checked = traverse(propertyState.getValue(BINARY), checkBinaries);
                 } else if (type == BINARIES) {
@@ -308,36 +455,39 @@ public class ConsistencyChecker implements Closeable {
                     }
                 } else {
                     propertyState.getValue(type);
-                    propertyCount++;
+                    onCheckProperty();
                     checked = true;
                 }
-                
+
                 if (checked) {
-                    debug("Checked {0}/{1}", path, propertyState);
+                    onCheckPropertyEnd(path, propertyState);
                 }
             }
-            
+
             return null;
         } catch (RuntimeException | IOException e) {
-            printError("Error while traversing {0}: {1}", path, e);
+            onCheckNodeError(path, e);
             return path;
         }
     }
-    
+
     /**
-     * Recursively checks the consistency of a node and its descendants at the given path.
+     * Recursively checks the consistency of a node and its descendants at the
+     * given path.
+     *
      * @param node          node to be checked
      * @param path          path of the node
-     * @param checkBinaries if {@code true} full content of binary properties will be scanned
-     * @return              {@code null}, if the node is consistent, 
-     *                      or the path of the first inconsistency otherwise.
+     * @param checkBinaries if {@code true} full content of binary properties
+     *                      will be scanned
+     * @return {@code null}, if the node is consistent, or the path of the first
+     * inconsistency otherwise.
      */
     private String checkNodeAndDescendants(NodeState node, String path, boolean checkBinaries) {
         String result = checkNode(node, path, checkBinaries);
         if (result != null) {
             return result;
         }
-        
+
         try {
             for (ChildNodeEntry cne : node.getChildNodeEntries()) {
                 String childName = cne.getName();
@@ -350,54 +500,24 @@ public class ConsistencyChecker implements Closeable {
 
             return null;
         } catch (RuntimeException e) {
-            printError("Error while traversing {0}: {1}", path, e.getMessage());
+            onCheckTreeError(path, e);
             return path;
-        }
-    }
-    
-    static class NodeWrapper {
-        NodeState node;
-        String path;
-        
-        NodeWrapper(NodeState node, String path) {
-            this.node = node;
-            this.path = path;
-        }
-        
-        static NodeWrapper deriveTraversableNodeOnPath(NodeState root, String path) {
-            String parentPath = getParentPath(path);
-            String name = getName(path);
-            NodeState parent = getNode(root, parentPath);
-            
-            if (!denotesRoot(path)) {
-                if (!parent.hasChildNode(name)) {
-                    throw new IllegalArgumentException("Invalid path: " + path);
-                }
-                
-                return new NodeWrapper(parent.getChildNode(name), path);
-            } else {
-                return new NodeWrapper(parent, parentPath);
-            }
         }
     }
 
     private boolean traverse(Blob blob, boolean checkBinaries) throws IOException {
         if (checkBinaries && !isExternal(blob)) {
-            InputStream s = blob.getNewStream();
-            try {
+            try (InputStream s = blob.getNewStream()) {
                 byte[] buffer = new byte[8192];
                 int l = s.read(buffer, 0, buffer.length);
                 while (l >= 0) {
                     l = s.read(buffer, 0, buffer.length);
                 }
-            } finally {
-                s.close();
             }
-            
-            propertyCount++;
+            onCheckProperty();
             return true;
         }
-        
+
         return false;
     }
 
@@ -408,63 +528,6 @@ public class ConsistencyChecker implements Closeable {
         return false;
     }
 
-    @Override
-    public void close() {
-        store.close();
-    }
-
-    private void print(String format) {
-        outWriter.println(format);
-    }
-
-    private void print(String format, Object arg) {
-        outWriter.println(MessageFormat.format(format, arg));
-    }
-
-    private void print(String format, Object arg1, Object arg2) {
-        outWriter.println(MessageFormat.format(format, arg1, arg2));
-    }
-    
-    private void print(String format, Object arg1, Object arg2, Object arg3) {
-        outWriter.println(MessageFormat.format(format, arg1, arg2, arg3));
-    }
-    
-    private void printError(String format, Object arg) {
-        errWriter.println(MessageFormat.format(format, arg));
-    }
-
-    private void printError(String format, Object arg1, Object arg2) {
-        errWriter.println(MessageFormat.format(format, arg1, arg2));
-    }
-
-    private long ts;
-
-    private void debug(String format, Object arg) {
-        if (debug()) {
-            print(format, arg);
-        }
-    }
-
-    private void debug(String format, Object arg1, Object arg2) {
-        if (debug()) {
-            print(format, arg1, arg2);
-        }
-    }
-
-    private boolean debug() {
-        // Avoid calling System.currentTimeMillis(), which is slow on some systems.
-        if (debugInterval == Long.MAX_VALUE) {
-            return false;
-        } else if (debugInterval == 0) {
-            return true;
-        }
-
-        long ts = System.currentTimeMillis();
-        if ((ts - this.ts) / 1000 > debugInterval) {
-            this.ts = ts;
-            return true;
-        } else {
-            return false;
-        }
-    }
 }
+
+

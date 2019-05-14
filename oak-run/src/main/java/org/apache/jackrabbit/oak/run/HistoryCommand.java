@@ -24,7 +24,8 @@ import java.io.File;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
-import org.apache.jackrabbit.oak.commons.run.Command;
+import org.apache.jackrabbit.oak.run.commons.Command;
+import org.apache.jackrabbit.oak.segment.tool.History;
 
 class HistoryCommand implements Command {
 
@@ -56,7 +57,14 @@ class HistoryCommand implements Command {
         String journalName = journalArg.value(options);
         File journal = new File(isValidFileStoreOrFail(directory), journalName);
 
-        SegmentTarUtils.history(directory, journal, path, depth);
+        int returnCode = History.builder()
+            .withPath(directory)
+            .withJournal(journal)
+            .withNode(path)
+            .withDepth(depth)
+            .build()
+            .run();
+        System.exit(returnCode);
     }
 
 }

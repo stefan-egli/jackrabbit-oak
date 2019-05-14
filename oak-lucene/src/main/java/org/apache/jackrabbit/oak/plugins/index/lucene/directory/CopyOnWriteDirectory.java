@@ -39,10 +39,9 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import org.apache.commons.io.FileUtils;
 import org.apache.jackrabbit.oak.commons.IOUtils;
+import org.apache.jackrabbit.oak.commons.PerfLogger;
 import org.apache.jackrabbit.oak.commons.concurrent.NotifyingFutureTask;
 import org.apache.jackrabbit.oak.plugins.index.lucene.IndexCopier;
-import org.apache.jackrabbit.oak.plugins.index.lucene.IndexCopierClosedException;
-import org.apache.jackrabbit.oak.util.PerfLogger;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.IOContext;
@@ -80,6 +79,7 @@ public class CopyOnWriteDirectory extends FilterDirectory {
     private final CountDownLatch copyDone = new CountDownLatch(1);
     private final boolean reindexMode;
     private final String indexPath;
+    private boolean closed;
 
     /**
      * Current background task
@@ -143,7 +143,6 @@ public class CopyOnWriteDirectory extends FilterDirectory {
         this.executor = executor;
         this.indexPath = indexPath;
         this.reindexMode = reindexMode;
-        indexCopier.clearIndexFilesBeingWritten(indexPath);
         initialize();
     }
 
@@ -183,7 +182,6 @@ public class CopyOnWriteDirectory extends FilterDirectory {
         }
         ref = new COWLocalFileReference(name);
         fileMap.put(name, ref);
-        indexCopier.addIndexFileBeingWritten(indexPath, name);
         return ref.createOutput(context);
     }
 
@@ -206,8 +204,16 @@ public class CopyOnWriteDirectory extends FilterDirectory {
         return ref.openInput(context);
     }
 
+    public boolean isClosed() {
+        return closed;
+    }
+
     @Override
     public void close() throws IOException {
+        if (isClosed()) {
+            return;
+        }
+
         int pendingCopies = queue.size();
         addTask(STOP);
 
@@ -260,7 +266,8 @@ public class CopyOnWriteDirectory extends FilterDirectory {
 
         local.close();
         remote.close();
-        indexCopier.clearIndexFilesBeingWritten(indexPath);
+
+        closed = true;
     }
 
     @Override
@@ -385,7 +392,6 @@ public class CopyOnWriteDirectory extends FilterDirectory {
     }
 
     private class COWRemoteFileReference extends COWFileReference {
-        private boolean validLocalCopyPresent;
         private final long length;
 
         public COWRemoteFileReference(String name) throws IOException {
@@ -400,8 +406,7 @@ public class CopyOnWriteDirectory extends FilterDirectory {
 
         @Override
         public IndexInput openInput(IOContext context) throws IOException {
-            checkIfLocalValid();
-            if (validLocalCopyPresent && !IndexCopier.REMOTE_ONLY.contains(name)) {
+            if (checkIfLocalValid() && !IndexCopier.REMOTE_ONLY.contains(name)) {
                 indexCopier.readFromLocal(false);
                 return local.openInput(name, context);
             }
@@ -424,9 +429,23 @@ public class CopyOnWriteDirectory extends FilterDirectory {
             addDeleteTask(name);
         }
 
-        private void checkIfLocalValid() throws IOException {
-            validLocalCopyPresent = local.fileExists(name)
-                    && local.fileLength(name) == remote.fileLength(name);
+        private boolean checkIfLocalValid() throws IOException {
+            boolean validLocalCopyPresent = local.fileExists(name);
+
+            if (validLocalCopyPresent) {
+                long localFileLength = local.fileLength(name);
+                long remoteFileLength = remote.fileLength(name);
+                 validLocalCopyPresent = localFileLength == remoteFileLength;
+
+                 if (!validLocalCopyPresent) {
+                     log.warn("COWRemoteFileReference::file ({}) differs in length. local: {}; remote: {}, init-remote-length",
+                             name, localFileLength, remoteFileLength);
+                 }
+            } else if (!IndexCopier.REMOTE_ONLY.contains(name)) {
+                log.warn("COWRemoteFileReference::local file ({}) doesn't exist", name);
+            }
+
+            return validLocalCopyPresent;
         }
     }
 

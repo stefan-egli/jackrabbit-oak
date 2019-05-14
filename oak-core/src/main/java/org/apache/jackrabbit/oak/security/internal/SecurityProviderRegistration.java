@@ -16,32 +16,35 @@
  */
 package org.apache.jackrabbit.oak.security.internal;
 
+import java.io.Closeable;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Dictionary;
 import java.util.Hashtable;
 import java.util.List;
 import java.util.Map;
-import javax.annotation.Nonnull;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
-import org.apache.felix.scr.annotations.Activate;
-import org.apache.felix.scr.annotations.Component;
-import org.apache.felix.scr.annotations.Deactivate;
-import org.apache.felix.scr.annotations.Modified;
-import org.apache.felix.scr.annotations.Properties;
-import org.apache.felix.scr.annotations.Property;
-import org.apache.felix.scr.annotations.PropertyUnbounded;
-import org.apache.felix.scr.annotations.Reference;
-import org.apache.felix.scr.annotations.ReferenceCardinality;
-import org.apache.felix.scr.annotations.ReferencePolicy;
-import org.apache.felix.scr.annotations.References;
 import org.apache.jackrabbit.oak.commons.PropertiesUtil;
 import org.apache.jackrabbit.oak.osgi.OsgiWhiteboard;
+import org.apache.jackrabbit.oak.plugins.tree.RootProvider;
+import org.apache.jackrabbit.oak.plugins.tree.TreeProvider;
 import org.apache.jackrabbit.oak.security.authorization.composite.CompositeAuthorizationConfiguration;
+import org.apache.jackrabbit.oak.security.authorization.restriction.WhiteboardRestrictionProvider;
 import org.apache.jackrabbit.oak.security.user.UserConfigurationImpl;
+import org.apache.jackrabbit.oak.security.user.whiteboard.WhiteboardAuthorizableActionProvider;
+import org.apache.jackrabbit.oak.security.user.whiteboard.WhiteboardAuthorizableNodeName;
+import org.apache.jackrabbit.oak.security.user.whiteboard.WhiteboardUserAuthenticationFactory;
 import org.apache.jackrabbit.oak.spi.security.CompositeConfiguration;
 import org.apache.jackrabbit.oak.spi.security.ConfigurationParameters;
 import org.apache.jackrabbit.oak.spi.security.SecurityConfiguration;
 import org.apache.jackrabbit.oak.spi.security.SecurityProvider;
 import org.apache.jackrabbit.oak.spi.security.authentication.AuthenticationConfiguration;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleMBean;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleMonitor;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleStats;
+import org.apache.jackrabbit.oak.spi.security.authentication.LoginModuleStatsCollector;
 import org.apache.jackrabbit.oak.spi.security.authentication.token.CompositeTokenConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authentication.token.TokenConfiguration;
 import org.apache.jackrabbit.oak.spi.security.authorization.AuthorizationConfiguration;
@@ -55,103 +58,86 @@ import org.apache.jackrabbit.oak.spi.security.user.UserAuthenticationFactory;
 import org.apache.jackrabbit.oak.spi.security.user.UserConfiguration;
 import org.apache.jackrabbit.oak.spi.security.user.UserConstants;
 import org.apache.jackrabbit.oak.spi.security.user.action.AuthorizableActionProvider;
-import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardAuthorizableActionProvider;
-import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardAuthorizableNodeName;
-import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardRestrictionProvider;
-import org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUserAuthenticationFactory;
+import org.apache.jackrabbit.oak.spi.whiteboard.Registration;
+import org.apache.jackrabbit.oak.spi.whiteboard.Whiteboard;
+import org.apache.jackrabbit.oak.stats.StatisticsProvider;
+import org.jetbrains.annotations.NotNull;
 import org.osgi.framework.BundleContext;
 import org.osgi.framework.Constants;
+import org.osgi.framework.ServiceReference;
 import org.osgi.framework.ServiceRegistration;
+import org.osgi.service.component.annotations.Activate;
+import org.osgi.service.component.annotations.Component;
+import org.osgi.service.component.annotations.Deactivate;
+import org.osgi.service.component.annotations.Modified;
+import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferenceCardinality;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.metatype.annotations.AttributeDefinition;
+import org.osgi.service.metatype.annotations.Designate;
+import org.osgi.service.metatype.annotations.ObjectClassDefinition;
+import org.osgi.service.metatype.annotations.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static com.google.common.collect.Lists.newArrayList;
-import static com.google.common.collect.Lists.newCopyOnWriteArrayList;
+import com.google.common.io.Closer;
 
-@Component(
-        immediate = true,
-        metatype = true,
-        label = "Apache Jackrabbit Oak SecurityProvider",
-        description = "The default SecurityProvider embedded in Apache Jackrabbit Oak"
-)
-@Properties({
-        @Property(
-                name = "requiredServicePids",
-                label = "Required Service PIDs",
-                description = "The SecurityProvider will not register itself " +
-                        "unless the services identified by these PIDs are " +
-                        "registered first. Only the PIDs of implementations of " +
-                        "the following interfaces are checked: " +
-                        "AuthorizationConfiguration, PrincipalConfiguration, " +
-                        "TokenConfiguration, AuthorizableActionProvider, " +
-                        "RestrictionProvider and UserAuthenticationFactory.",
-                value = {
-                        "org.apache.jackrabbit.oak.security.authorization.AuthorizationConfigurationImpl",
-                        "org.apache.jackrabbit.oak.security.principal.PrincipalConfigurationImpl",
-                        "org.apache.jackrabbit.oak.security.authentication.token.TokenConfigurationImpl",
-                        "org.apache.jackrabbit.oak.spi.security.user.action.DefaultAuthorizableActionProvider",
-                        "org.apache.jackrabbit.oak.security.authorization.restriction.RestrictionProviderImpl",
-                        "org.apache.jackrabbit.oak.security.user.UserAuthenticationFactoryImpl"
-                },
-                unbounded = PropertyUnbounded.ARRAY
-        )
-})
-@References({
-        @Reference(
-                name = "authorizationConfiguration",
-                referenceInterface = AuthorizationConfiguration.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "principalConfiguration",
-                referenceInterface = PrincipalConfiguration.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "tokenConfiguration",
-                referenceInterface = TokenConfiguration.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "authorizableNodeName",
-                referenceInterface = AuthorizableNodeName.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "authorizableActionProvider",
-                referenceInterface = AuthorizableActionProvider.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "restrictionProvider",
-                referenceInterface = RestrictionProvider.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        ),
-        @Reference(
-                name = "userAuthenticationFactory",
-                referenceInterface = UserAuthenticationFactory.class,
-                cardinality = ReferenceCardinality.OPTIONAL_MULTIPLE,
-                policy = ReferencePolicy.DYNAMIC
-        )
-})
+import static com.google.common.collect.Lists.newArrayList;
+import static org.apache.jackrabbit.oak.spi.security.RegistrationConstants.OAK_SECURITY_NAME;
+import static org.apache.jackrabbit.oak.commons.IOUtils.closeQuietly;
+import static org.apache.jackrabbit.oak.spi.security.ConfigurationParameters.EMPTY;
+import static org.apache.jackrabbit.oak.spi.whiteboard.WhiteboardUtils.registerMBean;
+
+@Component(immediate=true)
+@Designate(ocd = SecurityProviderRegistration.Configuration.class)
 @SuppressWarnings("unused")
 public class SecurityProviderRegistration {
 
+    @ObjectClassDefinition(
+            name = "Apache Jackrabbit Oak SecurityProvider",
+            description = "The default SecurityProvider embedded in Apache Jackrabbit Oak"
+    )
+    @interface Configuration {
+        @AttributeDefinition(
+                name = "Required Services",
+                description = "The SecurityProvider will not register itself " +
+                        "unless the services identified by the following service pids " +
+                        "or the oak.security.name properties are registered first. The class name is " +
+                        "identified by checking the service.pid property. If that property " +
+                        "does not exist, the oak.security.name property is used as a fallback." +
+                        "Only implementations of the following interfaces are checked :" +
+                        "AuthorizationConfiguration, PrincipalConfiguration, " +
+                        "TokenConfiguration, AuthorizableActionProvider, " +
+                        "RestrictionProvider and UserAuthenticationFactory."
+        )
+        String[] requiredServicePids() default {
+                "org.apache.jackrabbit.oak.security.authorization.AuthorizationConfigurationImpl",
+                "org.apache.jackrabbit.oak.security.principal.PrincipalConfigurationImpl",
+                "org.apache.jackrabbit.oak.security.authentication.token.TokenConfigurationImpl",
+                "org.apache.jackrabbit.oak.spi.security.user.action.DefaultAuthorizableActionProvider",
+                "org.apache.jackrabbit.oak.security.authorization.restriction.RestrictionProviderImpl",
+                "org.apache.jackrabbit.oak.security.user.UserAuthenticationFactoryImpl"
+        };
+        
+        @AttributeDefinition(
+                name = "Authorization Composition Type",
+                description = "The Composite Authorization model uses this flag to determine what type of logic "
+                        + "to apply to the existing providers (default value is AND).",
+                options = {
+                        @Option(label = "AND", value = "AND"),
+                        @Option(label = "OR", value = "OR")
+                }
+        )
+        String authorizationCompositionType() default "AND";
+
+    }
+
     private static final Logger log = LoggerFactory.getLogger(SecurityProviderRegistration.class);
 
-    @Reference
     private AuthenticationConfiguration authenticationConfiguration;
 
-    @Reference
     private PrivilegeConfiguration privilegeConfiguration;
 
-    @Reference
     private UserConfiguration userConfiguration;
 
     private BundleContext context;
@@ -166,16 +152,23 @@ public class SecurityProviderRegistration {
     private final CompositePrincipalConfiguration principalConfiguration = new CompositePrincipalConfiguration();
     private final CompositeTokenConfiguration tokenConfiguration = new CompositeTokenConfiguration();
 
-    private final List<AuthorizableNodeName> authorizableNodeNames = newCopyOnWriteArrayList();
-    private final List<AuthorizableActionProvider> authorizableActionProviders = newCopyOnWriteArrayList();
-    private final List<RestrictionProvider> restrictionProviders = newCopyOnWriteArrayList();
-    private final List<UserAuthenticationFactory> userAuthenticationFactories = newCopyOnWriteArrayList();
+    private final SortedMap<ServiceReference, AuthorizableNodeName> authorizableNodeNames = Collections.synchronizedSortedMap(new TreeMap<>());
+    private final SortedMap<ServiceReference, AuthorizableActionProvider> authorizableActionProviders = Collections.synchronizedSortedMap(new TreeMap<>());
+    private final SortedMap<ServiceReference, RestrictionProvider> restrictionProviders = Collections.synchronizedSortedMap(new TreeMap<>());
+    private final SortedMap<ServiceReference, UserAuthenticationFactory> userAuthenticationFactories = Collections.synchronizedSortedMap(new TreeMap<>());
+
+    private RootProvider rootProvider;
+    private TreeProvider treeProvider;
+
+    @Reference
+    private StatisticsProvider statisticsProvider = StatisticsProvider.NOOP;
+    private Closer closer;
 
     //----------------------------------------------------< SCR integration >---
 
     @Activate
-    public void activate(BundleContext context, Map<String, Object> configuration) {
-        String[] requiredServicePids = getRequiredServicePids(configuration);
+    public void activate(BundleContext context, Configuration configuration) {
+        String[] requiredServicePids = configuration.requiredServicePids();
 
         synchronized (this) {
             for (String pid : requiredServicePids) {
@@ -184,13 +177,14 @@ public class SecurityProviderRegistration {
 
             this.context = context;
         }
+        this.authorizationConfiguration.withCompositionType(configuration.authorizationCompositionType());
 
         maybeRegister();
     }
 
     @Modified
-    public void modified(Map<String, Object> configuration) {
-        String[] requiredServicePids = getRequiredServicePids(configuration);
+    public void modified(Configuration configuration) {
+        String[] requiredServicePids = configuration.requiredServicePids();
 
         synchronized (this) {
             preconditions.clearPreconditions();
@@ -199,6 +193,7 @@ public class SecurityProviderRegistration {
                 preconditions.addPrecondition(pid);
             }
         }
+        this.authorizationConfiguration.withCompositionType(configuration.authorizationCompositionType());
 
         maybeUnregister();
         maybeRegister();
@@ -225,6 +220,7 @@ public class SecurityProviderRegistration {
 
     //--------------------------------------< unary security configurations >---
 
+    @Reference(name = "authenticationConfiguration")
     public void bindAuthenticationConfiguration(AuthenticationConfiguration authenticationConfiguration) {
         this.authenticationConfiguration = authenticationConfiguration;
     }
@@ -233,6 +229,7 @@ public class SecurityProviderRegistration {
         this.authenticationConfiguration = null;
     }
 
+    @Reference(name = "privilegeConfiguration")
     public void bindPrivilegeConfiguration(PrivilegeConfiguration privilegeConfiguration) {
         this.privilegeConfiguration = privilegeConfiguration;
     }
@@ -241,6 +238,7 @@ public class SecurityProviderRegistration {
         this.privilegeConfiguration = null;
     }
 
+    @Reference(name = "userConfiguration")
     public void bindUserConfiguration(UserConfiguration userConfiguration) {
         this.userConfiguration = userConfiguration;
     }
@@ -249,8 +247,34 @@ public class SecurityProviderRegistration {
         this.userConfiguration = null;
     }
 
+    //-------------------------------------------< unary tree/root provider >---
+
+    @Reference(name = "rootProvider")
+    public void bindRootProvider(RootProvider rootProvider) {
+        this.rootProvider = rootProvider;
+    }
+
+    public void unbindRootProvider(RootProvider rootProvider) {
+        this.rootProvider = null;
+    }
+
+    @Reference(name = "treeProvider")
+    public void bindTreeProvider(TreeProvider treeProvider) {
+        this.treeProvider = treeProvider;
+    }
+
+    public void unbindTreeProvider(TreeProvider treeProvider) {
+        this.treeProvider = null;
+    }
+
     //-----------------------------------< multiple security configurations >---
 
+    @Reference(
+            name = "authorizationConfiguration",
+            service = AuthorizationConfiguration.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
     public void bindAuthorizationConfiguration(AuthorizationConfiguration configuration, Map<String, Object> properties) {
         bindConfiguration(authorizationConfiguration, configuration, properties);
     }
@@ -259,6 +283,12 @@ public class SecurityProviderRegistration {
         unbindConfiguration(authorizationConfiguration, configuration, properties);
     }
 
+    @Reference(
+            name = "principalConfiguration",
+            service = PrincipalConfiguration.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
     public void bindPrincipalConfiguration(PrincipalConfiguration configuration, Map<String, Object> properties) {
         bindConfiguration(principalConfiguration, configuration, properties);
     }
@@ -267,6 +297,12 @@ public class SecurityProviderRegistration {
         unbindConfiguration(principalConfiguration, configuration, properties);
     }
 
+    @Reference(
+            name = "tokenConfiguration",
+            service = TokenConfiguration.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
     public void bindTokenConfiguration(TokenConfiguration configuration, Map<String, Object> properties) {
         bindConfiguration(tokenConfiguration, configuration, properties);
     }
@@ -275,7 +311,7 @@ public class SecurityProviderRegistration {
         unbindConfiguration(tokenConfiguration, configuration, properties);
     }
 
-    private void bindConfiguration(@Nonnull CompositeConfiguration composite, @Nonnull SecurityConfiguration configuration, Map<String, Object> properties) {
+    private <T extends SecurityConfiguration> void bindConfiguration(@NotNull CompositeConfiguration<T> composite, @NotNull T configuration, Map<String, Object> properties) {
         synchronized (this) {
             composite.addConfiguration(configuration, ConfigurationParameters.of(properties));
             addCandidate(properties);
@@ -283,7 +319,7 @@ public class SecurityProviderRegistration {
         maybeRegister();
     }
 
-    private void unbindConfiguration(@Nonnull CompositeConfiguration composite, @Nonnull SecurityConfiguration configuration, Map<String, Object> properties) {
+    private <T extends SecurityConfiguration> void unbindConfiguration(@NotNull CompositeConfiguration<T> composite, @NotNull T configuration, Map<String, Object> properties) {
         synchronized (this) {
             composite.removeConfiguration(configuration);
             removeCandidate(properties);
@@ -292,74 +328,97 @@ public class SecurityProviderRegistration {
     }
 
     //------------------------------------------------------------< add ons >---
-
-    public void bindAuthorizableNodeName(AuthorizableNodeName authorizableNodeName, Map<String, Object> properties) {
+    @Reference(
+            name = "authorizableNodeName",
+            service = AuthorizableNodeName.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
+    public void bindAuthorizableNodeName(@NotNull ServiceReference serviceReference, @NotNull AuthorizableNodeName authorizableNodeName) {
         synchronized (this) {
-            authorizableNodeNames.add(authorizableNodeName);
-            addCandidate(properties);
+            authorizableNodeNames.put(serviceReference, authorizableNodeName);
+            addCandidate(serviceReference);
         }
 
         maybeRegister();
     }
 
-    public void unbindAuthorizableNodeName(AuthorizableNodeName authorizableNodeName, Map<String, Object> properties) {
+    public void unbindAuthorizableNodeName(@NotNull ServiceReference serviceReference, @NotNull AuthorizableNodeName authorizableNodeName) {
         synchronized (this) {
-            authorizableNodeNames.remove(authorizableNodeName);
-            removeCandidate(properties);
+            authorizableNodeNames.remove(serviceReference);
+            removeCandidate(serviceReference);
         }
 
         maybeUnregister();
     }
 
-    public void bindAuthorizableActionProvider(AuthorizableActionProvider authorizableActionProvider, Map<String, Object> properties) {
+    @Reference(
+            name = "authorizableActionProvider",
+            service = AuthorizableActionProvider.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
+    public void bindAuthorizableActionProvider(@NotNull ServiceReference serviceReference, @NotNull AuthorizableActionProvider authorizableActionProvider) {
         synchronized (this) {
-            authorizableActionProviders.add(authorizableActionProvider);
-            addCandidate(properties);
+            authorizableActionProviders.put(serviceReference, authorizableActionProvider);
+            addCandidate(serviceReference);
         }
 
         maybeRegister();
     }
 
-    public void unbindAuthorizableActionProvider(AuthorizableActionProvider authorizableActionProvider, Map<String, Object> properties) {
+    public void unbindAuthorizableActionProvider(@NotNull ServiceReference serviceReference, @NotNull AuthorizableActionProvider authorizableActionProvider) {
         synchronized (this) {
-            authorizableActionProviders.remove(authorizableActionProvider);
-            removeCandidate(properties);
+            authorizableActionProviders.remove(serviceReference);
+            removeCandidate(serviceReference);
         }
 
         maybeUnregister();
     }
 
-    public void bindRestrictionProvider(RestrictionProvider restrictionProvider, Map<String, Object> properties) {
+    @Reference(
+            name = "restrictionProvider",
+            service = RestrictionProvider.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
+    public void bindRestrictionProvider(@NotNull ServiceReference serviceReference, @NotNull RestrictionProvider restrictionProvider) {
         synchronized (this) {
-            restrictionProviders.add(restrictionProvider);
-            addCandidate(properties);
+            restrictionProviders.put(serviceReference, restrictionProvider);
+            addCandidate(serviceReference);
         }
 
         maybeRegister();
     }
 
-    public void unbindRestrictionProvider(RestrictionProvider restrictionProvider, Map<String, Object> properties) {
+    public void unbindRestrictionProvider(@NotNull ServiceReference serviceReference, @NotNull RestrictionProvider restrictionProvider) {
         synchronized (this) {
-            restrictionProviders.remove(restrictionProvider);
-            removeCandidate(properties);
+            restrictionProviders.remove(serviceReference);
+            removeCandidate(serviceReference);
         }
 
         maybeUnregister();
     }
 
-    public void bindUserAuthenticationFactory(UserAuthenticationFactory userAuthenticationFactory, Map<String, Object> properties) {
+    @Reference(
+            name = "userAuthenticationFactory",
+            service = UserAuthenticationFactory.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC
+    )
+    public void bindUserAuthenticationFactory(@NotNull ServiceReference serviceReference, @NotNull UserAuthenticationFactory userAuthenticationFactory) {
         synchronized (this) {
-            userAuthenticationFactories.add(userAuthenticationFactory);
-            addCandidate(properties);
+            userAuthenticationFactories.put(serviceReference, userAuthenticationFactory);
+            addCandidate(serviceReference);
         }
 
         maybeRegister();
     }
 
-    public void unbindUserAuthenticationFactory(UserAuthenticationFactory userAuthenticationFactory, Map<String, Object> properties) {
+    public void unbindUserAuthenticationFactory(@NotNull ServiceReference serviceReference, @NotNull UserAuthenticationFactory userAuthenticationFactory) {
         synchronized (this) {
-            userAuthenticationFactories.remove(userAuthenticationFactory);
-            removeCandidate(properties);
+            userAuthenticationFactories.remove(serviceReference);
+            removeCandidate(serviceReference);
         }
 
         maybeUnregister();
@@ -424,19 +483,33 @@ public class SecurityProviderRegistration {
 
         // Register the SecurityProvider.
 
-        Dictionary<String, Object> properties = new Hashtable<String, Object>();
+        Dictionary<String, Object> properties = new Hashtable<>();
 
         properties.put("type", "default");
 
+        Whiteboard whiteboard = new OsgiWhiteboard(context);
         ServiceRegistration registration = context.registerService(
                 SecurityProvider.class.getName(),
-                createSecurityProvider(context),
+                createSecurityProvider(whiteboard),
                 properties
         );
 
         synchronized (this) {
             this.registration = registration;
             this.registering = false;
+        }
+
+        closer = Closer.create();
+        if (authenticationConfiguration instanceof LoginModuleStatsCollector) {
+            LoginModuleStats lmMonitor = new LoginModuleStats(statisticsProvider);
+            ((LoginModuleStatsCollector) authenticationConfiguration).setLoginModuleMonitor(lmMonitor);
+
+            Registration mon = whiteboard.register(LoginModuleMonitor.class, lmMonitor, Collections.emptyMap());
+            closer.register((Closeable) mon::unregister);
+
+            Registration mbean = registerMBean(whiteboard, LoginModuleMBean.class, lmMonitor, LoginModuleMBean.TYPE,
+                    "LoginModule statistics");
+            closer.register((Closeable) mbean::unregister);
         }
 
         log.info("SecurityProvider instance registered");
@@ -456,8 +529,8 @@ public class SecurityProviderRegistration {
                 return;
             }
 
-            // The preconditions are not satisfied. This may happen when a
-            // dependency is unbound from the current component.
+            // The preconditions are still satisfied. This may happen when a
+            // dependency is unbound while not being listed as required service.
 
             if (preconditions.areSatisfied()) {
                 log.info("Aborting: preconditions are satisfied");
@@ -471,41 +544,25 @@ public class SecurityProviderRegistration {
         }
 
         registration.unregister();
+        closeQuietly(closer);
 
         log.info("SecurityProvider instance unregistered");
     }
 
-    private SecurityProvider createSecurityProvider(@Nonnull BundleContext context) {
-        InternalSecurityProvider securityProvider = new InternalSecurityProvider();
-
-        // Static, mandatory references
-
-        securityProvider.setAuthenticationConfiguration(ConfigurationInitializer.initializeConfiguration(securityProvider, authenticationConfiguration));
-        securityProvider.setPrivilegeConfiguration(ConfigurationInitializer.initializeConfiguration(securityProvider, privilegeConfiguration));
-
+    private SecurityProvider createSecurityProvider(@NotNull Whiteboard whiteboard) {
         ConfigurationParameters userParams = ConfigurationParameters.of(
-                ConfigurationParameters.of(UserConstants.PARAM_AUTHORIZABLE_ACTION_PROVIDER, createWhiteboardAuthorizableActionProvider()),
-                ConfigurationParameters.of(UserConstants.PARAM_AUTHORIZABLE_NODE_NAME, createWhiteboardAuthorizableNodeName()),
-                ConfigurationParameters.of(UserConstants.PARAM_USER_AUTHENTICATION_FACTORY, createWhiteboardUserAuthenticationFactory()));
-        securityProvider.setUserConfiguration(ConfigurationInitializer.initializeConfiguration(securityProvider, userConfiguration, userParams));
+              ConfigurationParameters.of(UserConstants.PARAM_AUTHORIZABLE_ACTION_PROVIDER, createWhiteboardAuthorizableActionProvider()),
+              ConfigurationParameters.of(UserConstants.PARAM_AUTHORIZABLE_NODE_NAME, createWhiteboardAuthorizableNodeName()),
+              ConfigurationParameters.of(UserConstants.PARAM_USER_AUTHENTICATION_FACTORY, createWhiteboardUserAuthenticationFactory()));
 
-        // Multiple, dynamic references
+        ConfigurationParameters authorizationParams = ConfigurationParameters
+                .of(AccessControlConstants.PARAM_RESTRICTION_PROVIDER, createWhiteboardRestrictionProvider());
 
-        ConfigurationParameters restrictionParams = ConfigurationParameters.of(AccessControlConstants.PARAM_RESTRICTION_PROVIDER, createWhiteboardRestrictionProvider());
-        ConfigurationInitializer.initializeConfigurations(securityProvider, authorizationConfiguration, restrictionParams);
-        securityProvider.setAuthorizationConfiguration(authorizationConfiguration);
-
-        ConfigurationInitializer.initializeConfigurations(securityProvider, principalConfiguration, ConfigurationParameters.EMPTY);
-        securityProvider.setPrincipalConfiguration(principalConfiguration);
-
-        ConfigurationInitializer.initializeConfigurations(securityProvider, tokenConfiguration, ConfigurationParameters.EMPTY);
-        securityProvider.setTokenConfiguration(tokenConfiguration);
-
-        // Whiteboard
-
-        securityProvider.setWhiteboard(new OsgiWhiteboard(context));
-
-        return securityProvider;
+        return SecurityProviderBuilder.newBuilder().withRootProvider(rootProvider).withTreeProvider(treeProvider)
+                .with(authenticationConfiguration, EMPTY, privilegeConfiguration, EMPTY, userConfiguration, userParams,
+                        authorizationConfiguration, authorizationParams, principalConfiguration, EMPTY,
+                        tokenConfiguration, EMPTY)
+                .withWhiteboard(whiteboard).build();
     }
 
     private RestrictionProvider createWhiteboardRestrictionProvider() {
@@ -513,7 +570,10 @@ public class SecurityProviderRegistration {
 
             @Override
             protected List<RestrictionProvider> getServices() {
-                return newArrayList(restrictionProviders);
+                Collection<RestrictionProvider> values = restrictionProviders.values();
+                synchronized (restrictionProviders) {
+                    return newArrayList(values);
+                }
             }
 
         };
@@ -524,7 +584,10 @@ public class SecurityProviderRegistration {
 
             @Override
             protected List<AuthorizableActionProvider> getServices() {
-                return newArrayList(authorizableActionProviders);
+                Collection<AuthorizableActionProvider> values = authorizableActionProviders.values();
+                synchronized (authorizableActionProviders) {
+                    return newArrayList(values);
+                }
             }
 
         };
@@ -535,7 +598,10 @@ public class SecurityProviderRegistration {
 
             @Override
             protected List<AuthorizableNodeName> getServices() {
-                return newArrayList(authorizableNodeNames);
+                Collection<AuthorizableNodeName> values = authorizableNodeNames.values();
+                synchronized (authorizableNodeNames) {
+                    return newArrayList(values);
+                }
             }
 
         };
@@ -546,38 +612,68 @@ public class SecurityProviderRegistration {
 
             @Override
             protected List<UserAuthenticationFactory> getServices() {
-                return newArrayList(userAuthenticationFactories);
+                Collection<UserAuthenticationFactory> values = userAuthenticationFactories.values();
+                synchronized (userAuthenticationFactories) {
+                    return newArrayList(values);
+                }
             }
 
         };
     }
 
     private void addCandidate(Map<String, Object> properties) {
-        String pid = getServicePid(properties);
+        String pidOrName = getServicePidOrComponentName(properties);
 
-        if (pid == null) {
+        if (pidOrName == null) {
             return;
         }
 
-        preconditions.addCandidate(pid);
+        preconditions.addCandidate(pidOrName);
+    }
+
+    private void addCandidate(@NotNull ServiceReference serviceReference) {
+        String pidOrName = getServicePidOrComponentName(serviceReference);
+
+        if (pidOrName == null) {
+            return;
+        }
+
+        preconditions.addCandidate(pidOrName);
     }
 
     private void removeCandidate(Map<String, Object> properties) {
-        String pid = getServicePid(properties);
+        String pidOrName = getServicePidOrComponentName(properties);
 
-        if (pid == null) {
+        if (pidOrName == null) {
             return;
         }
 
-        preconditions.removeCandidate(pid);
+        preconditions.removeCandidate(pidOrName);
     }
 
-    private String getServicePid(Map<String, Object> properties) {
-        return PropertiesUtil.toString(properties.get(Constants.SERVICE_PID), null);
+    private void removeCandidate(@NotNull ServiceReference serviceReference) {
+        String pidOrName = getServicePidOrComponentName(serviceReference);
+
+        if (pidOrName == null) {
+            return;
+        }
+
+        preconditions.removeCandidate(pidOrName);
     }
 
-    private String[] getRequiredServicePids(Map<String, Object> configuration) {
-        return PropertiesUtil.toStringArray(configuration.get("requiredServicePids"), new String[]{});
+    private static String getServicePidOrComponentName(Map<String, Object> properties) {
+        String servicePid = PropertiesUtil.toString(properties.get(Constants.SERVICE_PID), null);
+        if ( servicePid != null ) {
+            return servicePid;
+        }
+        return PropertiesUtil.toString(properties.get(OAK_SECURITY_NAME), null);
     }
 
+    private static String getServicePidOrComponentName(@NotNull ServiceReference serviceReference) {
+        String servicePid = PropertiesUtil.toString(serviceReference.getProperty(Constants.SERVICE_PID), null);
+        if ( servicePid != null ) {
+            return servicePid;
+        }
+        return PropertiesUtil.toString(serviceReference.getProperty(OAK_SECURITY_NAME), null);
+    }
 }
